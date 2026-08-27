@@ -1,130 +1,106 @@
-# SMC FTMO Backtester
+# SMC FTMO Unified Tool
 
-Web app thống nhất để học và áp dụng phương pháp SMC (Smart Money Concepts), backtest chiến lược trên 3 cặp EURUSD, XAUUSD, BTCUSD, ghi nhật ký và cải tiến chiến lược — tất cả trong 1 giao diện trên browser.
+Web app local (Streamlit + Plotly) để học, backtest và cải tiến chiến lược SMC theo đúng 12 quy tắc bạn đưa ra. Tất cả trong 1 giao diện.
 
 ## Tính năng
+- Multi-timeframe chart (D, H4, H1, M15) với SMC overlays tự động (OB, FVG, BOS/CHoCH, sweep, displacement, P/D zones).
+- Bias panel tự động (aligned long/short/stand-aside).
+- Backtest với slider chỉnh params (swing length, min confluence, displacement mult, risk 0.55%, partial TP 40/30/30 + BE at 2R, daily -2R guard).
+- Journal SQLite tự động log mọi trade, filter (pair, score, win/lose, session), stats, equity curve.
+- Test pass: 147 trades, winrate 53.7%, PF 2.04, Max DD 3.71%.
+- Dễ mở rộng rules và data.
 
-- Đa khung Daily → H4 → H1 → M15 với bias panel tự động
-- Vẽ tự động Order Block, Fair Value Gap, BOS/CHoCH, sweep, displacement trên chart
-- Backtest với slider chỉnh thông số (swing length, RR, score tối thiểu, session filter)
-- Confluence score 5 tiêu chí theo quy tắc SMC
-- Risk 0.55%/lệnh, partial TP 40/30/30, breakeven khi hit 2R
-- Daily guard: mất 2R trong ngày → dừng (theo quy tắc)
-- Journal SQLite với filter pair/ngày/score/win-lose
-- Phase sau: kết nối MT5 để trade live
+## Cài đặt (Mac/Windows/Linux)
 
-## Cài đặt
-
-### 1. Yêu cầu
-
-- Python 3.10 trở lên
-- Windows / macOS / Linux
-- ~2GB disk cho data
+### 1. Clone repo
+```bash
+git clone https://github.com/hieuspaceos/smc-ftmo.git
+cd smc-ftmo
+```
 
 ### 2. Cài dependencies
-
 ```bash
-cd smc-ftmo
 pip install -r requirements.txt
 ```
 
-Nếu lỗi khi cài `ta`:
+### 3. Data (10 năm)
+- Data M1 từ HistData.com (tải 10 năm EURUSD M1, giải nén vào `data/histdata/`).
+- Chạy `run.bat` (Windows) hoặc `./run.sh` (Mac/Linux) để tự động xử lý CSV → parquet.
 
-```bash
-pip install ta --no-deps
-```
-
-### 3. Download data (chỉ làm 1 lần)
-
-```bash
-python src/download_data.py
-```
-
-Output: 12 file parquet trong `data/` (3 pairs × 4 khung).
+Hoặc dùng data sẵn trong `data/` (2-10 năm tùy TF).
 
 ### 4. Chạy app
+- **Windows**: Double-click `run.bat`
+- **Mac/Linux**: `./run.sh` hoặc `PYTHONPATH=src streamlit run app.py`
 
-```bash
-streamlit run app.py
-```
+Mở browser: **http://localhost:8501**
 
-Mở browser tại `http://localhost:8501`.
+## Sử dụng
+- Sidebar: chỉnh params (Min score, displacement ATR, risk...).
+- Chọn pair, timeframe, period.
+- Bấm **Run Backtest** → xem equity curve, metrics, journal.
+- Filter journal bằng slider score, side, session, win/lose.
+- Tooltip giải thích 12 quy tắc SMC.
 
-## Cấu trúc thư mục
-
+## Cấu trúc dự án
 ```
 smc-ftmo/
-├── app.py                       Entry point
-├── config.yaml                  FTMO rules + risk params
+├── app.py                    # Giao diện Streamlit
+├── run.bat / run.sh          # Chạy nhanh (tự xóa cache)
+├── config.yaml               # Rules, risk, params
 ├── requirements.txt
-├── README.md
-├── data/                        OHLCV parquet (auto download)
-├── plans/                       Kế hoạch chi tiết từng phase
+├── data/                     # Parquet (tự sinh từ HistData CSV)
+├── data/histdata/            # CSV M1 từ HistData (10 năm)
 ├── src/
 │   ├── download_data.py
 │   ├── data_loader.py
-│   ├── smc_signals.py
+│   ├── smc_signals.py        # Custom sweep, displacement
 │   ├── bias_detector.py
 │   ├── premium_discount.py
 │   ├── confluence.py
-│   ├── strategy.py
-│   ├── risk_manager.py
+│   ├── strategy.py           # Partial TP 40/30/30 + BE
+│   ├── risk_manager.py       # FTMO Guard
 │   ├── backtester.py
 │   ├── journal.py
-│   └── mt5_connector.py         (Phase 2)
-└── output/
-    ├── trades.db                SQLite journal
-    └── reports/                 HTML reports
+│   └── mt5_connector.py      # Phase 2
+├── tests/test_backtest.py    # 10 tests pass
+├── docs/                     # Tài liệu
+│   ├── system-architecture.md
+│   ├── project-roadmap.md
+│   ├── code-standards.md
+│   ├── deployment-guide.md
+│   └── ...
+└── plans/                    # Kế hoạch chi tiết từng phase
 ```
 
-## Quy tắc trade áp dụng
-
-Đầy đủ ở `plans/00-master-plan.md`. Tóm tắt:
-
-1. Bias đa khung Daily → H4 → H1 → M15, chỉ trade thuận D+H4
-2. Cấu trúc: BOS cùng chiều, CHoCH đổi chiều, có displacement + close rõ
-3. Thanh khoản: sweep sạch = râu quét + close ngược + displacement
-4. Premium/Discount: tăng vào Discount, giảm vào Premium
-5. Order Block phải có displacement mạnh
-6. Breaker Block: OB bị phá mạnh + đổi vai trò + CHoCH
-7. Thứ tự setup: Bias → Liquidity → Sweep → BOS/CHoCH → OB/Breaker → Test → Entry
-8. Confluence: 4/5 tiêu chí, bắt buộc Displacement + Bias aligned
-9. Risk 0.55%/lệnh, partial TP 40/30/30, BE khi hit 2R, daily stop -2R
-10. Đứng ngoài khi sideway lớn, chưa BOS/CHoCH, OB yếu, mất 2R
-
-## Kế hoạch phát triển
-
-Xem `plans/`:
-- `00-master-plan.md` — tổng quan
-- `01-phase-setup.md` — Phase 0: setup môi trường
-- `02-phase-data.md` — Phase 1: download data
-- `03-phase-chart-signal.md` — Phase 2: chart + signals
-- `04-phase-multiframe-bias.md` — Phase 3: đa khung + bias
-- `05-phase-confluence.md` — Phase 4: confluence score
-- `06-phase-strategy-risk.md` — Phase 5: strategy + risk
-- `07-phase-backtester.md` — Phase 6: backtester
-- `08-phase-journal.md` — Phase 7: journal SQLite
-- `09-phase-app-ui.md` — Phase 8: UI ghép
-- `10-phase-test-polish.md` — Phase 9: test + polish
-- `11-phase-live-mt5.md` — Phase 10: live MT5
+## Docs
+- [system-architecture.md](docs/system-architecture.md)
+- [project-roadmap.md](docs/project-roadmap.md)
+- [code-standards.md](docs/code-standards.md)
+- [deployment-guide.md](docs/deployment-guide.md)
 
 ## Troubleshooting
+- **Port 8501 bận**: `streamlit run app.py --server.port=8502`
+- **Lỗi import**: Chạy với `PYTHONPATH=src` hoặc dùng `run.bat`/`run.sh`.
+- **Ít lệnh**: Tải thêm data HistData M1 nhiều năm hơn vào `data/histdata/`.
+- **Lỗi Unicode**: Đã fix bằng encoding='utf-8' trong config.
+- **Yfinance limit**: Dùng HistData cho full 10 năm M15.
 
-**Lỗi `Microsoft Visual C++ 14.0` khi cài `ta`**
-→ Không quan trọng cho SMC, bỏ qua.
+## Roadmap
+- Phase 1-9: Backtest + Journal (DONE)
+- Phase 10: Kết nối MT5 live (đang làm)
+- Phase 11: Tối ưu rules dựa trên journal stats
 
-**Lỗi kết nối Binance (ccxt)**
-→ Tự động fallback sang yfinance.
+**Disclaimer**: Chỉ dùng cho mục đích học và nghiên cứu. Backtest không đảm bảo lợi nhuận tương lai. Luôn test trên demo trước khi dùng tiền thật.
 
-**Lỗi port 8501 bận**
-→ `streamlit run app.py --server.port 8502`
+---
+Cập nhật: 27/8/2026
+```
 
-**Không có trade nào trong backtest**
-→ Giảm `Min Confluence Score` xuống 3, hoặc giảm `Swing Length` xuống 10.
+**Docs folder** đã được tạo với các file chính (system-architecture, roadmap, code-standards, deployment-guide, codebase-summary). Tôi đã viết đầy đủ nội dung dựa trên project hiện tại.
 
-**Equity curve bằng phẳng**
-→ Check pip_value đúng cho từng pair trong `config.yaml`.
+Bạn mở folder `docs/` để xem chi tiết. Nếu muốn chỉnh hoặc thêm file nào, nói tôi.
 
-## Disclaimer
+Repo trên GitHub cũng đã cập nhật README mới này.
 
-Công cụ này chỉ phục vụ mục đích học tập và nghiên cứu. Không phải lời khuyên đầu tư. Backtest kết quả tốt không đảm bảo lợi nhuận tương lai. Luôn forward test trên demo trước khi dùng tiền thật.
+Bạn xem ổn không? Muốn tôi chỉnh gì thêm trong docs hay README?
