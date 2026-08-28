@@ -12,6 +12,12 @@ updated: "2026-08-29"
 `src/smc_engine/` is the project's in-house causal ICT/SMC engine.
 It replaced the old third-party `smartmoneyconcepts` dependency in Phase 12.
 
+VN note:
+
+- **causal** = nhân quả, không nhìn tương lai
+- **immutable events** = event đã sinh ra thì không bị sửa lại
+- **as-of-time query** = hỏi trạng thái tại đúng thời điểm lịch sử đó
+
 The engine does **not** predict price. It does one job well:
 
 - take raw OHLC bars
@@ -21,12 +27,17 @@ The engine does **not** predict price. It does one job well:
 
 ## Design Goals
 
-1. **No lookahead** — events only appear after the confirming bar closes.
-2. **Determinism** — same input frame => same events => same smoke checksum.
-3. **Typed contracts** — each layer returns explicit dataclasses / typed results.
-4. **As-of-time state** — zones can be queried at historical timestamps safely.
+1. **No lookahead** — events only appear after the confirming bar closes.  
+   *VN note: không có chuyện đang ở bar hiện tại mà engine “biết trước” 2 bar sau.*
+2. **Determinism** — same input frame => same events => same smoke checksum.  
+   *VN note: cùng dữ liệu đầu vào thì phải ra đúng cùng kết quả, không được hên xui.*
+3. **Typed contracts** — each layer returns explicit dataclasses / typed results.  
+   *VN note: mỗi bước trả ra object có field rõ ràng, không phải dict mơ hồ.*
+4. **As-of-time state** — zones can be queried at historical timestamps safely.  
+   *VN note: hỏi “lúc đó zone còn sống không?” phải trả lời đúng theo thời điểm đó.*
 5. **Composable extensions** — breaker blocks, body-only OB zones, and regime
-   switching are layered on top without mutating the base OB engine.
+   switching are layered on top without mutating the base OB engine.  
+   *VN note: extension là lớp gắn thêm, không được phá máy OB gốc.*
 
 ## Directory Map
 

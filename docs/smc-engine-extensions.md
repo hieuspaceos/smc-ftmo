@@ -13,8 +13,13 @@ The base OB engine is intentionally conservative and stable. Extensions are
 kept outside `order_blocks.py` so the core engine stays deterministic and all
 pre-existing tests continue to pass verbatim.
 
-That split matters because the extensions are more experimental than the core.
+VN note:
 
+- **extension** = lớp mở rộng gắn thêm, không phá lõi
+- **non-invasive** = không đụng vào máy OB gốc
+- mục tiêu là thử ý tưởng mới nhưng vẫn giữ baseline nguyên vẹn
+
+That split matters because the extensions are more experimental than the core.
 ## Extension 1 — Breaker Blocks
 
 `src/smc_engine/breaker_blocks.py`
@@ -32,10 +37,16 @@ a later CHoCH.
 4. require `choch_pos - ob.origin_pos <= promotion_lookback_bars`
 5. apply single-flip rule: an OB can become a breaker once only
 
+VN note:
+
+- bước 3 là rule chống lookahead: OB phải chết trước, CHoCH tới sau
+- bước 4 là chống stale zone: OB quá cũ thì không promote nữa
+- bước 5 là chống double-count: 1 OB chỉ được lật vai 1 lần
+
 ### Why CHoCH and not BOS
 
-- BOS = continuation
-- CHoCH = reversal
+- BOS = continuation *(VN: tiếp diễn trend)*
+- CHoCH = reversal *(VN: đảo chiều cấu trúc)*
 
 A breaker is specifically a role-reversal concept, so CHoCH is the right
 promotion event.

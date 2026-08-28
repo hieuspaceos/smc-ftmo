@@ -9,13 +9,17 @@ updated: "2026-08-29"
 
 ## Shared Contracts
 
+VN note:
+
+- **contract** = giao kèo dữ liệu giữa các module
+- **result object** = gói kết quả typed của từng phase
+
 ### `events.py`
 
 | Symbol | Meaning |
 |---|---|
-| `SwingEvent` | confirmed pivot with `pivot_*` and `activation_*` fields |
-| `SwingResult` | chronological swing events + activation-aligned high/low series |
-
+| `SwingEvent` | confirmed pivot with `pivot_*` and `activation_*` fields *(VN: vừa có vị trí pivot gốc, vừa có thời điểm được phép dùng)* |
+| `SwingResult` | chronological swing events + activation-aligned high/low series *(VN: list event + series để adapter/backtester dùng nhanh)* |
 ## Detection Modules
 
 ### `swings.py`
@@ -38,15 +42,19 @@ Important exports:
 - `calculate_atr(df, period=14)`
 - `detect_range_expansion(df, atr, multiplier=1.5)`
 
+VN note:
+
+- **ATR** = average true range, độ rung trung bình gần đây
+- **range expansion** = cây nến mạnh hơn nền dao động bình thường
+
 Metrics inside `ExpansionMetrics`:
 
-- `range_atr`
-- `body_atr`
-- `body_ratio`
-- `close_location`
-- `direction`
-- `qualified`
-
+- `range_atr` *(VN: biên độ cây nến / ATR)*
+- `body_atr` *(VN: thân nến / ATR)*
+- `body_ratio` *(VN: tỷ lệ thân so với full range)*
+- `close_location` *(VN: close nằm gần high hay gần low)*
+- `direction` *(VN: bullish / bearish / neutral)*
+- `qualified` *(VN: có pass ngưỡng displacement không)*
 ### `structure.py`
 
 Important exports:
@@ -81,6 +89,11 @@ Notes:
 
 ## Zone Modules
 
+VN note:
+
+- **zone** = vùng giá để chờ phản ứng, không phải 1 điểm giá duy nhất
+- **lifecycle** = vòng đời của zone: sinh ra → active → touch / invalidate / expire
+
 ### `order_blocks.py`
 
 Important exports:
@@ -91,8 +104,8 @@ Important exports:
 
 Lifecycle helpers:
 
-- `is_active_at(ts)`
-- `is_first_test_at(ts)`
+- `is_active_at(ts)` *(VN: tại thời điểm này zone còn dùng được không)*
+- `is_first_test_at(ts)` *(VN: đây có còn là lần chạm đầu tiên không)*
 
 ### `fvg.py`
 

@@ -83,6 +83,12 @@ metrics = compute_metrics(trades, eq)
 
 ## Controls That Matter Most
 
+VN note:
+
+- **control** = nút/slider/selectbox ở UI
+- **mattered most** = thực sự đổi trade set hoặc đổi edge
+- **less important** không có nghĩa là vô dụng, chỉ là trên dataset hiện tại nó ít tác động hơn
+
 ### TP profile
 
 Controls how the engine exits profitable trades.
