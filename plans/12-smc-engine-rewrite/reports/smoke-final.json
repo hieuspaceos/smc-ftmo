@@ -1,0 +1,25 @@
+{
+  "pair": "EURUSD",
+  "bias_multi_tf": {
+    "D": "bull",
+    "H4": "bull",
+    "H1": "bull",
+    "M15": "bear"
+  },
+  "bias_distribution": {
+    "bull": 3,
+    "bear": 1
+  },
+  "trade_total": 32,
+  "trade_long": 5,
+  "trade_short": 27,
+  "winrate": 0.8125,
+  "profit_factor": 8.285761610711116,
+  "avg_r": 1.8904184836230695,
+  "total_r": 60.493391475938225,
+  "max_dd_pct": 1.1661968861126697,
+  "final_equity": 133271.36531176599,
+  "m15_bars": 15895,
+  "m15_close_sha256": "4d6a95cff910bbcbe857af34d07f0289529d514177fb5c607176c38eb565cb0a",
+  "runtime_seconds": 0.9278
+}

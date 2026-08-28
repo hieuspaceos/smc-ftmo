@@ -1,10 +1,9 @@
 """Multi-timeframe bias detector.
 
-Computes per-TF bias from the most recent BOS/CHoCH, then aligns Daily + H4
+Computes per-TF bias from the in-project SMC engine, then aligns Daily + H4
 into one of: aligned_long, aligned_short, stand_aside.
-Pure pandas + smartmoneyconcepts; 1-bar shift to avoid look-ahead.
 
-Stable public API (consumed by app.py):
+Stable public API:
     detect_bias(df, swing_length=20) -> 'bull' | 'bear' | None
     detect_premium_discount(df, lookback=50) -> dict with keys
         zone, equilibrium, range_high, range_low, current_price
@@ -16,90 +15,44 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from smartmoneyconcepts import smc
 
-try:
-    from .smc_signals import calculate_atr
-except ImportError:  # pragma: no cover
-    from smc_signals import calculate_atr
+from smc_engine.context import (
+    compute_dealing_range_context,
+    compute_bias_series,
+    context_snapshot,
+    is_in_pd_zone as _is_in_pd_zone,
+)
+from smc_engine.displacement import calculate_atr
+from smc_engine.structure import detect_structure
+from smc_engine.swings import detect_swings
 
 VALID_BIAS = {"bull", "bear", "neutral"}
 
 
 def detect_bias(df: pd.DataFrame, swing_length: int = 20) -> Optional[str]:
-    """Return 'bull' | 'bear' | None for one TF from last BOS/CHoCH.
+    """Return 'bull' | 'bear' | None for one TF from the latest structure event.
 
-    Rules (1-bar shift to avoid look-ahead):
-      - If a CHoCH exists in the last `swing_length` bars, the most recent
-        CHoCH wins (it reverses structure).
-      - Else if a BOS exists in the lookback window, the most recent BOS wins.
-      - Else None (sideway / undefined structure).
-
-    Returns:
-        'bull' | 'bear' | None
+    Uses the in-project SMC engine: confirmed swings → structure state
+    machine → trend Series. Returns the trend at the last bar.
     """
-    if df is None or len(df) < max(swing_length * 2 + 5, 30):
-        return None
-    # Normalize tz so shift/dropna + smc lib don't choke on mixed indices.
-    df = df.copy()
-    if df.index.tz is None:
-        df.index = df.index.tz_localize("UTC")
-    df_shift = df.shift(1).dropna()
-    if len(df_shift) < swing_length * 2:
+    if df is None or df.empty:
         return None
 
+    left = right = max(2, swing_length // 2)
     try:
-        if hasattr(smc, "swing_high_low"):
-            swings = smc.swing_high_low(
-                df_shift, left=swing_length // 2, right=swing_length // 2
-            )
-        elif hasattr(smc, "swing_highs_lows"):
-            swings = smc.swing_highs_lows(
-                df_shift, swing_length=swing_length
-            )
-        else:  # pragma: no cover - defensive
-            raise AttributeError("smartmoneyconcepts missing swing helper")
-        structure = smc.bos_choch(df_shift, swings)
-    except Exception as exc:  # pragma: no cover - defensive
-        print(f"[bias_detector] smc lib error: {exc}")
+        swings = detect_swings(df, left=left, right=right)
+    except (ValueError, TypeError):
+        return None
+    if len(swings.events) == 0:
         return None
 
-    # bos_choch returns a DataFrame with BOS / CHOCH / Level / BrokenIndex
-    # indexed like df_shift. We want to inspect the most recent bars, which
-    # live at the tail of df_shift (not df, which has the latest bar).
-    if not isinstance(structure, pd.DataFrame):
-        return None
-    if "BOS" not in structure.columns or "CHOCH" not in structure.columns:
-        return None
-    bos_col = structure["BOS"]
-    choch_col = structure["CHOCH"]
-
-    # Look at the last `swing_length` bars of df_shift, which already align
-    # with bos_col / choch_col.
-    tail = df_shift.iloc[-swing_length:]
-    bos_tail = bos_col.reindex(tail.index)
-    choch_tail = choch_col.reindex(tail.index)
-
-    window = df.iloc[-swing_length:]
-
-    def _last_signal(col: Optional[pd.Series]) -> Tuple[float, Optional[str]]:
-        if col is None:
-            return 0.0, None
-        sub = col.reindex(window.index)
-        non_zero = sub[sub != 0]
-        if non_zero.empty:
-            return 0.0, None
-        last_val = float(non_zero.iloc[-1])
-        direction = "bull" if last_val > 0 else "bear"
-        return float((sub != 0).sum()), direction
-
-    choch_count, choch_dir = _last_signal(choch_tail)
-    bos_count, bos_dir = _last_signal(bos_tail)
-
-    if choch_count > 0 and choch_dir is not None:
-        return choch_dir
-    if bos_count > 0 and bos_dir is not None:
-        return bos_dir
+    structure = detect_structure(df, swings)
+    bias_series = compute_bias_series(structure)
+    last = bias_series.iloc[-1]
+    if last == "bull":
+        return "bull"
+    if last == "bear":
+        return "bear"
     return None
 
 
@@ -108,13 +61,12 @@ def compute_bias_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return calculate_atr(df, period=period)
 
 
+detect_bias_atr = compute_bias_atr
+
 def detect_bias_multi_tf(
     data: Dict[str, pd.DataFrame], swing_length: int = 20
 ) -> Dict[str, Optional[str]]:
-    """Compute bias for each TF present in `data`.
-
-    Missing TFs default to None (stand_aside). TFs queried: D / H4 / H1 / M15.
-    """
+    """Compute bias for each TF present in `data`."""
     result: Dict[str, Optional[str]] = {}
     for tf in ("D", "H4", "H1", "M15"):
         df = data.get(tf)
@@ -126,13 +78,6 @@ def detect_bias_multi_tf(
 
 
 def align_bias(bias_by_tf: Dict[str, Optional[str]]) -> str:
-    """Combine Daily + H4 into a single aligned verdict.
-
-    Returns:
-        'aligned_long'   when both D and H4 are 'bull'
-        'aligned_short'  when both D and H4 are 'bear'
-        'stand_aside'    otherwise (mixed or any None)
-    """
     bias_d = bias_by_tf.get("D")
     bias_h4 = bias_by_tf.get("H4")
 
@@ -144,7 +89,6 @@ def align_bias(bias_by_tf: Dict[str, Optional[str]]) -> str:
 
 
 def bias_panel(bias_by_tf: Dict[str, Optional[str]]) -> Dict[str, str]:
-    """Return labels for the UI bias panel (Bull/Bear/Neutral per TF)."""
     panel = {}
     for tf in ("D", "H4", "H1", "M15"):
         b = bias_by_tf.get(tf)
@@ -158,10 +102,6 @@ def bias_panel(bias_by_tf: Dict[str, Optional[str]]) -> Dict[str, str]:
 
 
 def trade_direction(bias_by_tf: Dict[str, Optional[str]]) -> Optional[str]:
-    """Translate aligned verdict into a one-word trade direction.
-
-    Returns 'long', 'short', or None when the trader must stand aside.
-    """
     aligned = align_bias(bias_by_tf)
     if aligned == "aligned_long":
         return "long"
@@ -173,7 +113,6 @@ def trade_direction(bias_by_tf: Dict[str, Optional[str]]) -> Optional[str]:
 def is_bias_aligned(
     direction: str, bias_by_tf: Dict[str, Optional[str]]
 ) -> bool:
-    """True when D+H4 alignment matches the requested trade direction."""
     if direction == "long":
         return align_bias(bias_by_tf) == "aligned_long"
     if direction == "short":
@@ -182,12 +121,97 @@ def is_bias_aligned(
 
 
 def bias_to_series(bias_by_tf: Dict[str, Optional[str]]) -> pd.Series:
-    """Convenience for Streamlit tables: bias_by_tf as a labelled Series."""
     return pd.Series(bias_by_tf, name="bias")
 
 
+def detect_premium_discount(df, lookback: int = 50, price=None):
+    """Compatibility wrapper using the structure dealing-range context."""
+    if df is None or df.empty:
+        return {
+            "zone": "neutral",
+            "equilibrium": 0.0,
+            "range_high": 0.0,
+            "range_low": 0.0,
+            "current_price": float(price) if price is not None else 0.0,
+            "lookback": int(lookback),
+        }
+    left = right = max(2, lookback // 4 or 4)
+    try:
+        swings = detect_swings(df, left=left, right=right)
+    except (ValueError, TypeError):
+        swings = None
+    if swings is None or len(swings.events) == 0:
+        return {
+            "zone": "neutral",
+            "equilibrium": 0.0,
+            "range_high": 0.0,
+            "range_low": 0.0,
+            "current_price": float(price) if price is not None else float(df["close"].iloc[-1]),
+            "lookback": int(lookback),
+        }
+    structure = detect_structure(df, swings)
+    context = compute_dealing_range_context(df, structure)
+    snap = context_snapshot(context, lookback=lookback)
+    snap["lookback"] = int(lookback)
+    if price is not None:
+        snap["current_price"] = float(price)
+    return snap
+
+
+def score_setup(setup: Dict, min_score: int = 4):
+    """5-criteria setup scoring (kept for backward compatibility)."""
+    displacement = bool(setup.get("displacement", False))
+    bias_aligned = bool(setup.get("bias_aligned", False))
+    sweep_clean = bool(setup.get("sweep_clean", False))
+    in_pd_zone = bool(setup.get("in_pd_zone", False))
+    first_test = bool(setup.get("first_test", False))
+
+    score = int(displacement) + int(bias_aligned) + int(sweep_clean) + int(in_pd_zone) + int(first_test)
+    reasons = []
+    if displacement:
+        reasons.append("Displacement manh")
+    if bias_aligned:
+        reasons.append("Thuan Bias H4/Daily")
+    if sweep_clean:
+        reasons.append("Sweep sach")
+    if in_pd_zone:
+        reasons.append("Dung vung Premium/Discount")
+    if first_test:
+        reasons.append("Test lan dau")
+
+    has_required = displacement and bias_aligned
+    entry_allowed = has_required and score >= min_score
+    return score, reasons, entry_allowed
+
+
+def build_setup_dict(
+    *,
+    displacement: bool = False,
+    bias_aligned: bool = False,
+    sweep_clean: bool = False,
+    in_pd_zone: bool = False,
+    first_test: bool = True,
+    pd_zone: Optional[str] = None,
+) -> Dict:
+    return {
+        "displacement": bool(displacement),
+        "bias_aligned": bool(bias_aligned),
+        "sweep_clean": bool(sweep_clean),
+        "in_pd_zone": bool(in_pd_zone),
+        "first_test": bool(first_test),
+        "pd_zone": pd_zone,
+    }
+
+
+def reasons_to_text(reasons) -> str:
+    return "\n".join(reasons)
+
+
+def is_in_pd_zone(zone: str, direction: str, **kwargs) -> bool:
+    return _is_in_pd_zone(zone, direction, **kwargs)
+
+
 if __name__ == "__main__":
-    # Verification with synthetic data
     print("Testing bias_detector module...")
     rng = pd.date_range("2024-01-01", periods=400, freq="15min")
     np.random.seed(7)
@@ -206,32 +230,21 @@ if __name__ == "__main__":
 
     bias = detect_bias(test_df, swing_length=20)
     print(f"Single-TF bias: {bias} (must be 'bull' | 'bear' | None)")
-    assert bias in (None, "bull", "bear"), "detect_bias must return bull/bear/None"
+    assert bias in (None, "bull", "bear")
 
-    # Test with too-short data → None
     tiny = test_df.iloc[:10]
-    print(f"Tiny df bias: {detect_bias(tiny)}")
     assert detect_bias(tiny) is None
 
-    # Alignment logic
     sample = {"D": "bull", "H4": "bull", "H1": "bear", "M15": "bull"}
-    print(f"Aligned: {align_bias(sample)} (expect aligned_long)")
     assert align_bias(sample) == "aligned_long"
-
     sample2 = {"D": "bull", "H4": "bear", "H1": "bull", "M15": "bear"}
-    print(f"Aligned: {align_bias(sample2)} (expect stand_aside)")
     assert align_bias(sample2) == "stand_aside"
-
     sample3 = {"D": "bear", "H4": "bear", "H1": "bull", "M15": "bear"}
-    print(f"Aligned: {align_bias(sample3)} (expect aligned_short)")
     assert align_bias(sample3) == "aligned_short"
-
-    sample4 = {"D": None, "H4": "bull", "H1": "bull", "M15": "bull"}
-    print(f"Aligned (D None): {align_bias(sample4)} (expect stand_aside)")
+    sample4 = {"D": None, "H4": "bull"}
     assert align_bias(sample4) == "stand_aside"
 
-    print("Direction long w/ aligned_long:", trade_direction(sample))
-    print("Direction long w/ mixed:", trade_direction(sample2))
     assert trade_direction(sample2) is None
+    assert trade_direction(sample) == "long"
 
     print("bias_detector verified.")

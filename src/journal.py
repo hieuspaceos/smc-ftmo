@@ -138,9 +138,15 @@ class Journal:
             cur = conn.executemany(_INSERT_SQL, rows)
             return cur.rowcount
 
-    def clear(self) -> None:
+    def clear(self, pair: Optional[str] = None) -> int:
+        """Delete trades. If ``pair`` given, only that pair is removed.
+        Returns number of rows deleted."""
         with self._connect() as conn:
-            conn.execute("DELETE FROM trades")
+            if pair:
+                cur = conn.execute("DELETE FROM trades WHERE pair = ?", (pair,))
+            else:
+                cur = conn.execute("DELETE FROM trades")
+            return cur.rowcount
 
     def query(
         self,

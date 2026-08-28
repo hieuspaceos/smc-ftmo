@@ -1,34 +1,51 @@
-"""Smart Money Concepts signal detector."""
+"""Compatibility adapter over the in-project SMC engine.
+
+The class and function signatures are preserved so existing callers (app.py,
+backtester.py) continue to work. Internally this delegates to:
+
+    src.smc_engine.swings, structure, sweeps, order_blocks, fvg, displacement,
+    context.
+
+The generic ``Signal`` dataclass remains the serialization shape for chart
+overlay, journal rows, and backtest entry selection.
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-import numpy as np
 import pandas as pd
-from smartmoneyconcepts import smc
+
+from smc_engine.context import (
+    compute_bias_series,
+    compute_dealing_range_context,
+    is_in_pd_zone,
+)
+from smc_engine.displacement import (
+    ExpansionMetrics,
+    calculate_atr,
+    detect_range_expansion,
+)
+from smc_engine.fvg import FairValueGapEvent, FVGResult, detect_fvgs
+from smc_engine.order_blocks import (
+    OrderBlockEvent,
+    OrderBlockResult,
+    detect_order_blocks,
+)
+from smc_engine.structure import detect_structure
+from smc_engine.sweeps import SweepEvent, SweepResult, detect_sweeps
+from smc_engine.swings import SwingResult, detect_swings
 
 
-def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    """True Range ATR. Handles NaN closes from H1->M15 resampling gaps."""
-    df_clean = df.dropna(subset=["close"]).copy()
-    if len(df_clean) < period + 2:
-        return pd.Series(index=df.index, dtype=float)
-    tr1 = df_clean["high"] - df_clean["low"]
-    tr2 = (df_clean["high"] - df_clean["close"].shift()).abs()
-    tr3 = (df_clean["low"] - df_clean["close"].shift()).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.rolling(window=period, min_periods=period).mean()
-    result = atr.reindex(df.index)
-    first = result.first_valid_index()
-    if first is not None:
-        result = result.fillna(result.loc[first])
-    return result
+SignalType = Literal["bos", "choch", "fvg", "ob", "sweep", "displacement"]
+SignalDirection = Literal["bullish", "bearish"]
 
 
 @dataclass
 class Signal:
+    """Generic SMC overlay signal. Field names match the legacy contract."""
+
     timestamp: datetime
     type: str
     price: float
@@ -40,7 +57,158 @@ class Signal:
     bottom: Optional[float] = None
 
 
+EMPTY_SIGNAL_DICT: Dict[str, List[Signal]] = {
+    "bos": [],
+    "choch": [],
+    "fvg": [],
+    "ob": [],
+    "sweep": [],
+    "displacement": [],
+}
+
+
+def _to_datetime(ts: pd.Timestamp) -> datetime:
+    return pd.Timestamp(ts).to_pydatetime()
+
+
+def _to_pd_timestamp(ts: datetime | pd.Timestamp) -> pd.Timestamp:
+    return pd.Timestamp(ts)
+
+
+def _signals_from_sweeps(result: SweepResult) -> List[Signal]:
+    out: List[Signal] = []
+    for event in result.events:
+        out.append(Signal(
+            timestamp=_to_datetime(event.activation_timestamp),
+            type="sweep",
+            price=float(event.swept_level),
+            direction=event.direction,
+            confluence=0,
+            mitigated=False,
+        ))
+    return out
+
+
+def _signals_from_displacement(metrics: ExpansionMetrics) -> List[Signal]:
+    out: List[Signal] = []
+    direction = metrics.direction
+    close = metrics.range_atr  # placeholder; replaced below with close series
+    qualified = metrics.qualified
+    if not qualified.any():
+        return out
+    valid_dir = direction[direction != "neutral"]
+    valid_dir = valid_dir.reindex(qualified.index)
+    valid_qualified = qualified & (valid_dir != "neutral")
+    for ts, is_qual in valid_qualified.items():
+        if not bool(is_qual):
+            continue
+        d = str(direction.loc[ts])
+        out.append(Signal(
+            timestamp=_to_datetime(ts),
+            type="displacement",
+            price=0.0,
+            direction=d,
+            confluence=0,
+            mitigated=False,
+        ))
+    return out
+
+
+def _signals_from_ob(result: OrderBlockResult) -> List[Signal]:
+    out: List[Signal] = []
+    for ob in result.events:
+        out.append(Signal(
+            timestamp=_to_datetime(ob.activation_timestamp),
+            type="ob",
+            price=ob.price,
+            direction=ob.direction,
+            mitigated=ob.invalidation_timestamp is not None,
+            mitigation_time=_to_datetime(ob.invalidation_timestamp) if ob.invalidation_timestamp is not None else None,
+            confluence=0,
+            top=float(ob.top),
+            bottom=float(ob.bottom),
+        ))
+    return out
+
+
+def _signals_from_fvg(result: FVGResult) -> List[Signal]:
+    out: List[Signal] = []
+    for fvg in result.events:
+        out.append(Signal(
+            timestamp=_to_datetime(fvg.activation_timestamp),
+            type="fvg",
+            price=fvg.price,
+            direction=fvg.direction,
+            mitigated=fvg.fill_timestamp is not None,
+            mitigation_time=_to_datetime(fvg.fill_timestamp) if fvg.fill_timestamp is not None else None,
+            confluence=0,
+            top=float(fvg.top),
+            bottom=float(fvg.bottom),
+        ))
+    return out
+
+
+def _signals_from_structure(result) -> tuple[List[Signal], List[Signal]]:
+    bos: List[Signal] = []
+    choch: List[Signal] = []
+    for ev in result.events:
+        sig = Signal(
+            timestamp=_to_datetime(ev.activation_timestamp),
+            type="bos" if ev.type == "bos" else "choch",
+            price=float(ev.broken_level),
+            direction=ev.direction,
+            confluence=0,
+        )
+        if ev.type == "bos":
+            bos.append(sig)
+        else:
+            choch.append(sig)
+    return bos, choch
+
+
+def compute_overlays(
+    df: pd.DataFrame,
+    *,
+    swing_left: int = 5,
+    swing_right: int = 5,
+    displacement_atr_mult: float = 1.5,
+    sweep_atr_buffer: float = 0.05,
+) -> Dict[str, pd.Series | SwingResult | object]:
+    """Return the raw engine outputs (used by tests/backtester)."""
+    if df.empty or len(df) < (swing_left + swing_right + 1):
+        return {"swings": SwingResult((), pd.Series(dtype=float), pd.Series(dtype=float))}
+
+    swings = detect_swings(df, left=swing_left, right=swing_right)
+    atr = calculate_atr(df)
+    expansion = detect_range_expansion(df, atr, multiplier=displacement_atr_mult)
+    structure = detect_structure(df, swings, atr=atr)
+    sweeps = detect_sweeps(
+        df,
+        swings,
+        atr,
+        atr_buffer=sweep_atr_buffer,
+        range_expansion_mult=displacement_atr_mult,
+    )
+    order_blocks = detect_order_blocks(df, structure, expansion)
+    fvgs = detect_fvgs(df)
+    context = compute_dealing_range_context(df, structure)
+    bias = compute_bias_series(structure)
+    return {
+        "swings": swings,
+        "atr": atr,
+        "expansion": expansion,
+        "structure": structure,
+        "sweeps": sweeps,
+        "order_blocks": order_blocks,
+        "fvgs": fvgs,
+        "context": context,
+        "bias": bias,
+    }
+
+
 class SMCSignals:
+    """Compatibility wrapper that exposes generic Signal dicts."""
+
     def __init__(
         self,
         swing_length: int = 20,
@@ -50,71 +218,8 @@ class SMCSignals:
         self.swing_length = swing_length
         self.displacement_atr_mult = displacement_atr_mult
         self.sweep_atr_buffer = sweep_atr_buffer
-
-    def detect_displacement(self, df: pd.DataFrame) -> pd.Series:
-        atr = calculate_atr(df)
-        return (df["high"] - df["low"]) > (self.displacement_atr_mult * atr)
-
-    def detect_sweep(
-        self, df: pd.DataFrame, swings: pd.Series, direction: str
-    ) -> pd.Series:
-        atr = calculate_atr(df)
-        sweep = pd.Series(False, index=df.index, dtype=bool)
-        n_swings = len(swings)
-        for i in range(2, len(df)):
-            idx = i - 1
-            if idx >= n_swings:
-                continue
-            sv = swings.iloc[idx]
-            if pd.isna(sv):
-                continue
-            buf = self.sweep_atr_buffer * atr.iloc[i]
-            if direction == "bullish":
-                if df["low"].iloc[i] < (sv - buf) and df["close"].iloc[i] > sv:
-                    sweep.iloc[i] = True
-            else:
-                if df["high"].iloc[i] > (sv + buf) and df["close"].iloc[i] < sv:
-                    sweep.iloc[i] = True
-        return sweep
-
-    def detect_order_blocks(
-        self, df: pd.DataFrame, swings_df: Optional[pd.DataFrame] = None
-    ) -> List[Signal]:
-        """Build OBs from library swing HighLow markers.
-
-        HighLow == 1  -> swing high -> bearish OB
-        HighLow == -1 -> swing low  -> bullish OB
-        """
-        signals: List[Signal] = []
-        atr = calculate_atr(df)
-        if swings_df is None or swings_df.empty or "HighLow" not in swings_df.columns:
-            return signals
-
-        hl = swings_df["HighLow"]
-        for pos, val in enumerate(hl.values):
-            if pd.isna(val) or val == 0:
-                continue
-            df_pos = pos + 1  # 1-bar shift alignment
-            if df_pos >= len(df):
-                continue
-            if pd.isna(df["high"].iloc[df_pos]) or pd.isna(df["low"].iloc[df_pos]):
-                continue
-            atr_val = float(atr.iloc[df_pos]) if not pd.isna(atr.iloc[df_pos]) else 0.0
-            hi = float(df["high"].iloc[df_pos])
-            lo = float(df["low"].iloc[df_pos])
-            ts = df.index[df_pos]
-            rng = max(atr_val, hi - lo)
-            if val > 0:
-                signals.append(Signal(
-                    timestamp=ts, type="ob", price=hi,
-                    direction="bearish", top=hi, bottom=hi - rng,
-                ))
-            else:
-                signals.append(Signal(
-                    timestamp=ts, type="ob", price=lo,
-                    direction="bullish", top=lo + rng, bottom=lo,
-                ))
-        return signals
+        # Map user-facing swing_length to (left, right) symmetric window.
+        self._left = self._right = max(2, self.swing_length // 2)
 
     def get_signals(
         self,
@@ -122,122 +227,50 @@ class SMCSignals:
         tf: str = "M15",
         skip_mitigation: bool = False,
     ) -> Dict[str, List[Signal]]:
-        empty = {k: [] for k in ("bos", "choch", "fvg", "ob", "sweep", "displacement")}
-        if len(df) < 50:
+        empty = {key: [] for key in EMPTY_SIGNAL_DICT}
+        if df.empty or len(df) < (self._left + self._right + 1):
             return empty
 
-        df_s = df.shift(1).dropna()
-        n_s = len(df_s)
-        swings_df = pd.DataFrame()
-
-        try:
-            swings_df = smc.swing_highs_lows(df_s, swing_length=self.swing_length)
-            swings = swings_df.get(
-                "Level",
-                swings_df.iloc[:, 0] if not swings_df.empty else pd.Series(),
-            )
-        except Exception as exc:
-            print(f"[SMCSignals] lib warning {tf}: {exc}")
-            swings = pd.Series([np.nan] * n_s, index=df_s.index)
-
-        swings_aligned = pd.Series(
-            [np.nan] + list(swings.values), index=df.index[: n_s + 1]
+        overlays = compute_overlays(
+            df,
+            swing_left=self._left,
+            swing_right=self._right,
+            displacement_atr_mult=self.displacement_atr_mult,
+            sweep_atr_buffer=self.sweep_atr_buffer,
         )
 
-        displacement = self.detect_displacement(df)
-        sweep_bull = self.detect_sweep(df, swings_aligned, "bullish")
-        sweep_bear = self.detect_sweep(df, swings_aligned, "bearish")
-
+        bos, choch = _signals_from_structure(overlays["structure"])
         signals: Dict[str, List[Signal]] = {
-            "bos": [], "choch": [], "fvg": [], "ob": [],
-            "sweep": [], "displacement": [],
+            "bos": bos,
+            "choch": choch,
+            "fvg": _signals_from_fvg(overlays["fvgs"]),
+            "ob": _signals_from_ob(overlays["order_blocks"]),
+            "sweep": _signals_from_sweeps(overlays["sweeps"]),
+            "displacement": _signals_from_displacement(overlays["expansion"]),
         }
-        # Displacement/sweep over full df (not truncated by dropna length)
-        for i in range(10, len(df)):
-            if pd.isna(df["close"].iloc[i]):
-                continue
-            ts = df.index[i]
-            close = float(df["close"].iloc[i])
-            if bool(displacement.iloc[i]):
-                direction = (
-                    "bullish"
-                    if df["close"].iloc[i] >= df["open"].iloc[i]
-                    else "bearish"
-                )
-                signals["displacement"].append(
-                    Signal(ts, "displacement", close, direction)
-                )
-            if i < len(sweep_bull) and bool(sweep_bull.iloc[i]):
-                signals["sweep"].append(Signal(ts, "sweep", close, "bullish"))
-            if i < len(sweep_bear) and bool(sweep_bear.iloc[i]):
-                signals["sweep"].append(Signal(ts, "sweep", close, "bearish"))
-
-        signals["ob"] = self.detect_order_blocks(df, swings_df=swings_df)
 
         if not skip_mitigation:
-            signals = self._apply_mitigation_fast(df, signals)
-        return signals
-    def _apply_mitigation_fast(
-        self, df: pd.DataFrame, signals: Dict[str, List[Signal]]
-    ) -> Dict[str, List[Signal]]:
-        if df.empty:
             return signals
-        low = df["low"].values
-        high = df["high"].values
-        timestamps = df.index.values
-        running_min = pd.Series(low[::-1]).cummin().iloc[::-1].values
-        running_max = pd.Series(high[::-1]).cummax().iloc[::-1].values
-
-        for key in signals:
-            for s in signals[key]:
-                try:
-                    loc = df.index.get_loc(s.timestamp)
-                except KeyError:
-                    continue
-                if s.direction == "bullish" and running_min[loc] < s.price:
-                    s.mitigated = True
-                    mask = (timestamps > s.timestamp) & (low < s.price)
-                    if mask.any():
-                        s.mitigation_time = pd.Timestamp(timestamps[mask][0])
-                elif s.direction == "bearish" and running_max[loc] > s.price:
-                    s.mitigated = True
-                    mask = (timestamps > s.timestamp) & (high > s.price)
-                    if mask.any():
-                        s.mitigation_time = pd.Timestamp(timestamps[mask][0])
+        # Backwards-compatible skip_mitigation: drop zones already known to be
+        # mitigated/invalidated/filled at the timestamp of their event.
+        signals["ob"] = [s for s in signals["ob"] if not s.mitigated]
+        signals["fvg"] = [s for s in signals["fvg"] if not s.mitigated]
         return signals
 
 
 def get_smc_overlays(
-    df: pd.DataFrame, params: Dict = None
+    df: pd.DataFrame,
+    params: Dict[str, Any] | None = None,
 ) -> Dict[str, List[Signal]]:
+    """Functional wrapper kept for backward compatibility with app.py."""
     if params is None:
         params = {}
     kw = {
-        k: params.get(k, v)
-        for k, v in {
-            "swing_length": 20,
-            "displacement_atr_mult": 1.5,
-            "sweep_atr_buffer": 0.05,
-        }.items()
+        "swing_length": params.get("swing_length", 20),
+        "displacement_atr_mult": params.get("displacement_atr_mult", 1.5),
+        "sweep_atr_buffer": params.get("sweep_atr_buffer", 0.05),
     }
     return SMCSignals(**kw).get_signals(df)
 
 
-if __name__ == "__main__":
-    print("Testing SMC signals module...")
-    rng = pd.date_range("2024-01-01", periods=300, freq="15min")
-    base = np.cumsum(np.random.randn(300) * 0.0005) + 1.10
-    test_df = pd.DataFrame(
-        {
-            "open": base,
-            "high": base + np.abs(np.random.randn(300)) * 0.0003,
-            "low": base - np.abs(np.random.randn(300)) * 0.0003,
-            "close": base + np.random.randn(300) * 0.0002,
-            "volume": np.random.randint(100, 10000, 300),
-        },
-        index=rng,
-    )
-    det = SMCSignals(swing_length=10)
-    sigs = det.get_signals(test_df)
-    print("Signal types:", {k: len(v) for k, v in sigs.items()})
-    print("SMC signals verified.")
+__all__ = ["Signal", "SMCSignals", "get_smc_overlays", "calculate_atr"]

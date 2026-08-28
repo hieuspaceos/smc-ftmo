@@ -16,7 +16,7 @@ risk:
 
 # Strategy — SMC core
 strategy:
-  swing_length: 20
+  swing_length: 10
   rr_target: 2.5
   displacement_atr_mult: 1.5    # candle range > 1.5× ATR
   sweep_atr_buffer: 0.05        # vượt swing ≥ 0.05× ATR

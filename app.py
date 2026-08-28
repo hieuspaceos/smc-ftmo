@@ -268,7 +268,7 @@ with st.sidebar:
 
     st.subheader("SMC Params")
     swing_length = st.slider("Swing length", 5, 50,
-                             strat_cfg.get("swing_length", 20),
+                             strat_cfg.get("swing_length", 10),
                              help=RULE_TOOLTIPS["swing_length"])
     rr_target = st.slider("Risk:Reward", 1.0, 6.0,
                           float(strat_cfg.get("rr_target", 2.5)),
@@ -400,6 +400,9 @@ run_cfg = {
                                 "sweep_clean": 1, "premium_discount": 1,
                                 "first_test": 1}},
     "filters": {"sweep": sweep_filter, "pd": pd_filter, "first_test": first_test_filter},
+    "start_date": str(start_date) if start_date else "",
+    "end_date": str(end_date) if end_date else "",
+    "pd_lookback": int(pd_lookback),
 }
 
 if run_btn:
@@ -415,10 +418,21 @@ if run_btn:
     st.session_state["last_pair"] = pair
     if trades:
         try:
-            Journal().insert_many(trades)
+            journal = Journal()
+            cleared = journal.clear(pair=pair)
+            inserted = journal.insert_many(trades)
+            st.success(
+                f"Cleared {cleared} old {pair} trades, inserted {inserted} new trades."
+            )
         except Exception as exc:
             st.warning(f"Journal write skipped: {exc}")
-
+    else:
+        try:
+            cleared = Journal().clear(pair=pair)
+            if cleared:
+                st.info(f"No new trades — cleared {cleared} old {pair} journal entries.")
+        except Exception:
+            pass
 trades = st.session_state.get("last_trades") or []
 equity_curve = st.session_state.get("last_equity") or []
 metrics = compute_metrics(trades, equity_curve)

@@ -1,4 +1,4 @@
-"""M15 bar-by-bar backtester with full SMC pipeline.
+"""M15 bar-by-bar backtester with custom SMC pipeline.
 
 Loads EURUSD (or other pair) OHLCV across D/H4/H1/M15, iterates every
 M15 bar without look-ahead, opens trades only when confluence score >= 4
@@ -21,7 +21,7 @@ import pandas as pd
 _SRC = Path(__file__).parent
 sys.path.insert(0, str(_SRC))
 
-from bias_detector import detect_bias, align_bias
+from bias_detector import align_bias, detect_bias
 from confluence import score_setup
 from data_loader import load_multi_tf_data
 from premium_discount import pd_series
@@ -35,7 +35,6 @@ from strategy import PartialTPExit, check_entry, pip_value_for_pair
 # ---------------------------------------------------------------------------
 
 def _resample_h4_from_h1(df_h1: pd.DataFrame) -> pd.DataFrame:
-    """Resample H1 → H4 when the H4 parquet is missing."""
     if df_h1.empty:
         return pd.DataFrame()
     df = df_h1.copy()
@@ -51,79 +50,197 @@ def _resample_h4_from_h1(df_h1: pd.DataFrame) -> pd.DataFrame:
 
 
 def _ensure_h4(data: Dict[str, pd.DataFrame]) -> None:
-    """Patch missing H4 from H1 in-place."""
     if "H4" not in data or data["H4"].empty:
         if "H1" in data and not data["H1"].empty:
             data["H4"] = _resample_h4_from_h1(data["H1"])
 
 
-def _precompute_bias_per_day(
-    df_target: pd.DataFrame, swing_length: int
-) -> Dict[str, str]:
-    """Precompute bias string per calendar day for O(1) M15-loop lookup.
+def _resample_h1_to_daily(df_h1: pd.DataFrame, existing_d: pd.DataFrame) -> pd.DataFrame:
+    """Combine H1-daily with parquet D, filling Gaps from H1 when D ends early."""
+    if df_h1.empty:
+        return existing_d
+    h1_d = df_h1.resample("1D").agg({
+        "open": "first", "high": "max", "low": "min",
+        "close": "last", "volume": "sum",
+    }).dropna()
+    if existing_d is None or existing_d.empty:
+        return h1_d
+    out = pd.concat([existing_d, h1_d[h1_d.index > existing_d.index.max()]]).sort_index()
+    return out[~out.index.duplicated(keep="last")]
 
-    Bias uses all bars of df_target up through day-end (no future look-ahead).
-    That gives BOS/CHoCH enough history while staying causal.
+
+def _bias_series_for_tf(
+    df: pd.DataFrame, swing_length: int
+) -> pd.Series | None:
+    """Compute per-bar bias as a Series using the custom engine."""
+    if df is None or df.empty:
+        return None
+    from smc_engine.context import compute_bias_series
+    from smc_engine.structure import detect_structure
+    from smc_engine.swings import detect_swings
+
+    left = right = max(2, swing_length // 2)
+    swings = detect_swings(df, left=left, right=right)
+    if len(swings.events) == 0:
+        return None
+    structure = detect_structure(df, swings)
+    return compute_bias_series(structure)
+
+
+def _align_to_m15(htf_bias: pd.Series, m15_index: pd.DatetimeIndex) -> pd.Series:
+    """Forward-fill HTF bias onto every M15 bar.
+
+    Uses ``merge_asof`` so today's daily bias only applies after its own daily
+    close timestamp; future bias never leaks into past M15 bars.
     """
-    if df_target.empty:
-        return {}
-    result: Dict[str, str] = {}
-    tz = df_target.index.tz
-    prev_bias = "neutral"
-    min_bars = max(swing_length * 2 + 5, 50)
+    if htf_bias is None or htf_bias.empty:
+        return pd.Series("neutral", index=m15_index, dtype=object)
+    series = htf_bias.copy()
+    if not isinstance(series.index, pd.DatetimeIndex):
+        return pd.Series("neutral", index=m15_index, dtype=object)
+    if series.index.tz is None and m15_index.tz is not None:
+        series = series.tz_localize(m15_index.tz)
+    elif series.index.tz is not None and m15_index.tz is None:
+        series = series.tz_localize(None)
+    s = series.reset_index()
+    s.columns = ["ts", "bias"]
+    s["ts"] = pd.to_datetime(s["ts"])
+    target = pd.DataFrame({"ts": pd.to_datetime(m15_index)})
+    merged = pd.merge_asof(
+        target, s, on="ts", direction="backward", allow_exact_matches=True
+    )
+    merged["bias"] = merged["bias"].fillna("neutral")
+    return pd.Series(merged["bias"].values, index=m15_index, dtype=object)
 
-    for day in sorted(set(df_target.index.date)):
-        day_end_naive = pd.Timestamp(day) + pd.Timedelta(days=1)
-        if tz is not None:
-            day_end = day_end_naive.tz_localize(tz)
-        else:
-            day_end = day_end_naive
 
-        day_end_idx = int(df_target.index.searchsorted(day_end, side="left"))
-        if day_end_idx < min_bars:
-            result[str(day)] = prev_bias
+def _ob_zones_as_of(ob_list, ts) -> list:
+    """Return OB event dicts available at timestamp ``ts`` using lifecycle state."""
+    out = []
+    for ev in ob_list:
+        if ev.activation_timestamp > ts:
             continue
+        if not ev.is_active_at(ts):
+            continue
+        out.append({
+            "direction": ev.direction,
+            "top": float(ev.top),
+            "bottom": float(ev.bottom),
+            "first_touch_at": ev.first_touch_timestamp,
+            "activation_at": ev.activation_timestamp,
+        })
+    return out
 
-        slice_ = df_target.iloc[:day_end_idx]
-        bias = detect_bias(slice_, swing_length=swing_length)
-        if bias is None:
-            bias = prev_bias
-        result[str(day)] = bias
-        prev_bias = bias
 
-    return result
+def _fvg_zones_as_of(fvg_list, ts) -> list:
+    out = []
+    for ev in fvg_list:
+        if ev.activation_timestamp > ts:
+            continue
+        if not ev.is_active_at(ts):
+            continue
+        out.append({
+            "direction": ev.direction,
+            "top": float(ev.top),
+            "bottom": float(ev.bottom),
+        })
+    return out
+
 
 def run_backtest(
     pair: str = "EURUSD",
     config: dict | None = None,
 ) -> Tuple[List[dict], List[Tuple[pd.Timestamp, float]]]:
-    """Run bar-by-bar backtest on M15 data.
-
-    Returns (trades, equity_curve)."""
     if config is None:
         config = {}
 
-    swing_length = config.get("swing_length", 20)
+    swing_length = int(config.get("swing_length", 20))
     account_size = float(config.get("account_size", 100_000.0))
-    risk_per_trade = float(config.get("risk_per_trade", 0.0055))
-    max_trades_per_day = int(config.get("max_trades_per_day", 3))
-    max_daily_loss_r = float(config.get("max_daily_loss_r", 2.0))
-    sl_atr_buffer = float(config.get("sl_atr_buffer", 0.2))
-    min_confluence = int(config.get("min_confluence_score", 4))
+
+    risk_cfg = config.get("risk", {}) if isinstance(config.get("risk"), dict) else {}
+    risk_per_trade = float(
+        risk_cfg.get("per_trade_pct", config.get("risk_per_trade", 0.0055))
+    )
+    max_trades_per_day = int(
+        risk_cfg.get("max_trades_per_day", config.get("max_trades_per_day", 3))
+    )
+    max_daily_loss_r = float(
+        risk_cfg.get("daily_loss_limit_r", config.get("max_daily_loss_r", 2.0))
+    )
+
+    strat_cfg = config.get("strategy", {}) if isinstance(config.get("strategy"), dict) else {}
+    rr_target = float(strat_cfg.get("rr_target", config.get("rr_target", 2.5)))
+    sl_atr_buffer = float(strat_cfg.get("sl_atr_buffer", config.get("sl_atr_buffer", 0.2)))
+    min_confluence = int(
+        strat_cfg.get("min_confluence_score", config.get("min_confluence_score", 4))
+    )
+    require_bias_aligned = bool(
+        strat_cfg.get("require_bias_aligned", config.get("require_bias_aligned", True))
+    )
+
+    filters = config.get("filters", {}) if isinstance(config.get("filters"), dict) else {}
+    sweep_filter = bool(filters.get("sweep", False))
+    pd_filter = bool(filters.get("pd", False))
+    first_test_filter = bool(filters.get("first_test", False))
+
+    pd_lookback = int(config.get("pd_lookback", swing_length * 2 + 10))
+
+    start_iso = config.get("start_date")
+    end_iso = config.get("end_date")
+
     pip_value = pip_value_for_pair(pair)
 
-    # Load data
     data = load_multi_tf_data(pair)
     _ensure_h4(data)
 
     df_m15 = data.get("M15", pd.DataFrame())
     df_d = data.get("D", pd.DataFrame())
     df_h4 = data.get("H4", pd.DataFrame())
+    df_h1 = data.get("H1", pd.DataFrame())
+
+    if start_iso or end_iso:
+        try:
+            lo = pd.Timestamp(start_iso) if start_iso else df_m15.index[0]
+            hi = pd.Timestamp(end_iso) if end_iso else df_m15.index[-1]
+            tz = getattr(df_m15.index, "tz", None)
+            if tz is not None:
+                if getattr(lo, "tzinfo", None) is None:
+                    lo = lo.tz_localize(tz)
+                if getattr(hi, "tzinfo", None) is None:
+                    hi = hi.tz_localize(tz)
+            def _clip(d):
+                if d is None or d.empty:
+                    return d
+                if tz is not None and getattr(d.index, "tz", None) is None:
+                    d = d.tz_localize(tz)
+                return d[(d.index >= lo) & (d.index <= hi)]
+            df_m15 = _clip(df_m15)
+            df_d = _clip(df_d)
+            df_h4 = _clip(df_h4)
+        except Exception:
+            pass
 
     if df_m15.empty:
         return [], []
 
-    # Pre-compute signals once
+    # Compute HTF daily + extend D from H1 when D ends early.
+    if not df_d.empty and not df_h1.empty and df_d.index.max() < df_m15.index.max():
+        df_d_bias_src = _resample_h1_to_daily(df_h1, df_d)
+    elif df_d.empty and not df_h1.empty:
+        df_d_bias_src = _resample_h1_to_daily(df_h1, df_d)
+    else:
+        df_d_bias_src = df_d
+
+    bias_series_d = _bias_series_for_tf(df_d_bias_src, swing_length)
+    bias_series_h4 = _bias_series_for_tf(df_h4, swing_length)
+
+    m15_bias_d = _align_to_m15(bias_series_d, df_m15.index)
+    m15_bias_h4 = _align_to_m15(bias_series_h4, df_m15.index)
+
+    # ATR + P/D zone for every M15 bar
+    atr_all = calculate_atr(df_m15)
+    pd_zones = pd_series(df_m15, lookback=pd_lookback)
+
+    # Build all engine outputs once for the full M15 frame.
     detector = SMCSignals(
         swing_length=swing_length,
         displacement_atr_mult=config.get("displacement_atr_mult", 1.5),
@@ -131,65 +248,39 @@ def run_backtest(
     )
     signals_full = detector.get_signals(df_m15, skip_mitigation=True)
 
-    # Displacement / sweep as Series
+    # Displacement / sweep as Series.
     disp_series = pd.Series(False, index=df_m15.index, dtype=bool)
     for sig in signals_full.get("displacement", []):
-        if sig.timestamp in df_m15.index:
-            disp_series.loc[sig.timestamp] = True
+        ts = pd.Timestamp(sig.timestamp)
+        if ts in df_m15.index:
+            disp_series.loc[ts] = True
 
     sweep_bull_series = pd.Series(False, index=df_m15.index, dtype=bool)
     sweep_bear_series = pd.Series(False, index=df_m15.index, dtype=bool)
     for sig in signals_full.get("sweep", []):
-        if sig.timestamp in df_m15.index:
+        ts = pd.Timestamp(sig.timestamp)
+        if ts in df_m15.index:
             if sig.direction == "bullish":
-                sweep_bull_series.loc[sig.timestamp] = True
+                sweep_bull_series.loc[ts] = True
             else:
-                sweep_bear_series.loc[sig.timestamp] = True
+                sweep_bear_series.loc[ts] = True
 
-    # Pre-compute ATR and P/D zone for every bar
-    atr_all = calculate_atr(df_m15)
-    pd_zones = pd_series(df_m15, lookback=swing_length * 2 + 10)
+    # Walk the full M15 history once with the engine so we can query OB/FVG as-of.
+    from smc_engine.context import compute_dealing_range_context, is_in_pd_zone as _pd_is_in
+    from smc_engine.order_blocks import detect_order_blocks
+    from smc_engine.displacement import detect_range_expansion
+    from smc_engine.fvg import detect_fvgs
+    from smc_engine.structure import detect_structure
+    from smc_engine.swings import detect_swings
 
-    # Pre-compute bias per day for D and H4.
-    # D parquet often ends before M15 range — synthesize D from H1 when needed.
-    df_d_bias = df_d
-    if not df_m15.empty and (df_d.empty or df_d.index.max() < df_m15.index.min()):
-        df_h1 = data.get("H1", pd.DataFrame())
-        if not df_h1.empty:
-            df_d_bias = df_h1.resample("1D").agg({
-                "open": "first", "high": "max", "low": "min",
-                "close": "last", "volume": "sum",
-            }).dropna()
-    elif not df_d.empty and not df_m15.empty and df_d.index.max() < df_m15.index.max():
-        # Extend D with H1-daily beyond D's last date
-        df_h1 = data.get("H1", pd.DataFrame())
-        if not df_h1.empty:
-            h1_d = df_h1.resample("1D").agg({
-                "open": "first", "high": "max", "low": "min",
-                "close": "last", "volume": "sum",
-            }).dropna()
-            extra = h1_d[h1_d.index > df_d.index.max()]
-            if not extra.empty:
-                df_d_bias = pd.concat([df_d, extra]).sort_index()
-                df_d_bias = df_d_bias[~df_d_bias.index.duplicated(keep="last")]
-
-    daily_bias_d = _precompute_bias_per_day(df_d_bias, swing_length) if not df_d_bias.empty else {}
-    daily_bias_h4 = _precompute_bias_per_day(df_h4, swing_length) if not df_h4.empty else {}
-
-    # Forward-fill bias onto every M15 calendar day so missing keys don't force stand_aside
-    def _ffill_bias(bias_map: Dict[str, str], m15_index: pd.DatetimeIndex) -> Dict[str, str]:
-        out: Dict[str, str] = {}
-        last = "neutral"
-        for day in sorted({str(t.date()) for t in m15_index}):
-            if day in bias_map and bias_map[day] not in (None, "neutral"):
-                last = bias_map[day]
-            elif day in bias_map and bias_map[day] is not None:
-                last = bias_map[day]
-            out[day] = last
-        return out
-
-    daily_bias_d = _ffill_bias(daily_bias_d, df_m15.index)
-    daily_bias_h4 = _ffill_bias(daily_bias_h4, df_m15.index)
+    left = right = max(2, swing_length // 2)
+    swings_m15 = detect_swings(df_m15, left=left, right=right)
+    expansion_m15 = detect_range_expansion(df_m15, atr_all, multiplier=config.get("displacement_atr_mult", 1.5))
+    structure_m15 = detect_structure(df_m15, swings_m15, atr=atr_all)
+    order_blocks_full = detect_order_blocks(df_m15, structure_m15, expansion_m15)
+    fvgs_full = detect_fvgs(df_m15)
+    context_m15 = compute_dealing_range_context(df_m15, structure_m15)
+    pd_zone_engine_series = context_m15.zone.reindex(df_m15.index).fillna("neutral")
 
     # Guard
     guard = FTMOGuard(
@@ -214,68 +305,79 @@ def run_backtest(
             continue
         current_date = ts.date()
 
-        # Daily guard reset
         if guard.last_reset_date is None or guard.last_reset_date != current_date:
             guard.reset_daily(day=current_date)
 
-        # O(1) daily bias lookup
-        bias_d = daily_bias_d.get(str(current_date), "neutral")
-        bias_h4 = daily_bias_h4.get(str(current_date), "neutral")
+        bias_d = m15_bias_d.iloc[i] if i < len(m15_bias_d) else "neutral"
+        bias_h4 = m15_bias_h4.iloc[i] if i < len(m15_bias_h4) else "neutral"
         bias_by_tf = {"D": bias_d, "H4": bias_h4}
         aligned_bias = align_bias(bias_by_tf)
 
-        # Snapshot components (all O(1))
-        displacement = bool(disp_series.iloc[i])
-        sweep_bull = bool(sweep_bull_series.iloc[i])
-        sweep_bear = bool(sweep_bear_series.iloc[i])
+        displacement = bool(disp_series.iloc[i]) if i < len(disp_series) else False
+        sweep_bull = bool(sweep_bull_series.iloc[i]) if i < len(sweep_bull_series) else False
+        sweep_bear = bool(sweep_bear_series.iloc[i]) if i < len(sweep_bear_series) else False
         sweep_clean = sweep_bull or sweep_bear or displacement
-        pd_zone_now = str(pd_zones.iloc[i]) if i < len(pd_zones) else "neutral"
+
+        pd_zone_now = pd_zone_engine_series.iloc[i] if i < len(pd_zone_engine_series) else "neutral"
         atr_now = float(atr_all.iloc[i]) if i < len(atr_all) else 0.0
 
-        trade_dir = (
-            "long" if aligned_bias == "aligned_long"
-            else ("short" if aligned_bias == "aligned_short" else None)
-        )
-        bias_aligned = aligned_bias in ("aligned_long", "aligned_short")
-        in_pd_zone = (
-            (pd_zone_now == "discount" and trade_dir == "long")
-            or (pd_zone_now == "premium" and trade_dir == "short")
-        )
+        # Direction. Engine bias enum: bull/bear/neutral.
+        if aligned_bias == "aligned_long":
+            trade_dir = "long"
+        elif aligned_bias == "aligned_short":
+            trade_dir = "short"
+        elif not require_bias_aligned:
+            if bias_d == "bull" or bias_h4 == "bull":
+                trade_dir = "long"
+            elif bias_d == "bear" or bias_h4 == "bear":
+                trade_dir = "short"
+            else:
+                trade_dir = None
+        else:
+            trade_dir = None
+        bias_aligned = trade_dir is not None
+        in_pd_zone = _pd_is_in(str(pd_zone_now), trade_dir or "long")
 
-        # Score
+        ob_zones_now = []
+        if trade_dir in ("long", "short"):
+            target = "bullish" if trade_dir == "long" else "bearish"
+            for ev in order_blocks_full.events:
+                if ev.direction != target:
+                    continue
+                if not ev.is_active_at(ts):
+                    continue
+                if ev.first_touch_timestamp is not None and ts > ev.first_touch_timestamp:
+                    continue
+                ob_zones_now.append({
+                    "direction": ev.direction,
+                    "top": float(ev.top),
+                    "bottom": float(ev.bottom),
+                })
+        ob_top: float | None = ob_zones_now[-1]["top"] if ob_zones_now else None
+        ob_bottom: float | None = ob_zones_now[-1]["bottom"] if ob_zones_now else None
+
+        first_test = ob_top is not None and ob_bottom is not None
+
         score, reasons, entry_allowed = score_setup(
             {
                 "displacement": displacement,
                 "bias_aligned": bias_aligned,
                 "sweep_clean": sweep_clean,
                 "in_pd_zone": in_pd_zone,
-                "first_test": True,
+                "first_test": first_test,
                 "pd_zone": pd_zone_now,
             },
             min_score=min_confluence,
         )
 
-        # OB: pick the most recent unmitigated OB matching trade direction; use
-        # top/bottom fields so SL width reflects the actual OB range, not a
-        # single price level.
-        ob_top: float | None = None
-        ob_bottom: float | None = None
-        target_dir = "bullish" if trade_dir == "long" else (
-            "bearish" if trade_dir == "short" else None
-        )
-        if target_dir is not None:
-            for sig in reversed(signals_full.get("ob", [])):
-                if sig.mitigated or sig.direction != target_dir:
-                    continue
-                t = getattr(sig, "top", None)
-                b = getattr(sig, "bottom", None)
-                if t is None or b is None:
-                    continue
-                if sig.timestamp > ts:
-                    continue
-                ob_top = float(t)
-                ob_bottom = float(b)
-                break
+        if sweep_filter and not sweep_clean:
+            entry_allowed = False
+        if pd_filter and not in_pd_zone:
+            entry_allowed = False
+        if first_test_filter and not first_test:
+            entry_allowed = False
+        if rr_target > 4.0:
+            entry_allowed = False
 
         snapshot = {
             "side_request": trade_dir,
@@ -285,7 +387,7 @@ def run_backtest(
             "bias_aligned": bias_aligned,
             "sweep_clean": sweep_clean,
             "in_pd_zone": in_pd_zone,
-            "first_test": True,
+            "first_test": first_test,
             "pd_zone": pd_zone_now,
             "ob_top": ob_top,
             "ob_bottom": ob_bottom,
@@ -298,7 +400,7 @@ def run_backtest(
             "sl_atr_buffer": sl_atr_buffer,
         }
 
-        # ── Update open position ─────────────────────────────────────────────
+        # Update open position
         if open_pos is not None:
             exit_obj = open_pos["exit_obj"]
             risk_amount = open_pos["risk_amount"]
@@ -348,16 +450,15 @@ def run_backtest(
                     open_pos = None
                     break
 
-        # ── Entry logic ─────────────────────────────────────────────────────
         if open_pos is None:
             can_trade, _ = guard.can_trade(equity)
             if can_trade and entry_allowed:
                 entry_info = check_entry(snapshot)
                 if entry_info is not None:
-                    # Risk fixed off initial account to keep DD bounded (FTMO style)
                     risk_amount = account_size * risk_per_trade
                     sl_dist = abs(entry_info["entry"] - entry_info["sl"])
                     if sl_dist <= 0:
+                        equity_curve.append((ts, equity))
                         continue
                     lot = calculate_lot(account_size, risk_per_trade, sl_dist, pip_value)
                     exit_obj = PartialTPExit(
@@ -385,7 +486,6 @@ def run_backtest(
 
         equity_curve.append((ts, equity))
 
-    # Close open position at end
     if open_pos is not None:
         last_ts = df_m15.index[-1]
         last_close = float(df_m15["close"].iloc[-1])
@@ -434,7 +534,6 @@ def compute_metrics(
     trades: List[dict],
     equity_curve: List[Tuple[pd.Timestamp, float]],
 ) -> dict:
-    """Compute summary statistics from closed trades and equity curve."""
     if not trades:
         return {
             "total_trades": 0, "winrate": 0.0, "profit_factor": 0.0,
@@ -478,12 +577,8 @@ def _streak(bools: List[bool], target: bool) -> int:
     return best
 
 
-# ---------------------------------------------------------------------------
-# CLI smoke test
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
-    print("Running backtest smoke test on EURUSD (Aug 2024–present)…")
+    print("Running backtest smoke test on EURUSD …")
     config = {
         "swing_length": 20, "risk_per_trade": 0.0055,
         "max_trades_per_day": 3, "max_daily_loss_r": 2.0,
@@ -496,4 +591,3 @@ if __name__ == "__main__":
     print(f"Trades: {metrics['total_trades']}, Winrate: {metrics['winrate']:.1%}, "
           f"PF: {metrics['profit_factor']:.2f}, MaxDD: {metrics['max_dd_pct']:.2f}%, "
           f"AvgR: {metrics['avg_r']:.2f}")
-    print("Backtester smoke test done.")
