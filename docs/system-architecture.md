@@ -6,14 +6,32 @@ created: "2026-08-27"
 
 # System Architecture
 
-Phase 12 replaced the third-party `smartmoneyconcepts` library with a custom
-causal ICT/SMC engine. All swing, BOS/CHoCH, sweep, order block, FVG,
-bias, and premium/discount logic now lives in `src/smc_engine/`.
+The project has two architectural layers:
 
-## Custom Engine Modules
+1. **Core engine** — causal ICT/SMC structure detection in `src/smc_engine/`
+2. **Consumption layer** — `src/smc_signals.py`, `src/backtester.py`, and
+   `app.py`
+
+Phase 12 replaced the third-party `smartmoneyconcepts` library with a custom
+causal engine. Phase 13 added non-invasive breaker/body extensions. Phase 14
+added regime-aware breaker switching in the backtester and UI.
+
+## Split Engine Docs
+
+The engine is documented as a separate doc set:
+
+- [SMC Engine Overview](./smc-engine-overview.md)
+- [SMC Engine Event Pipeline](./smc-engine-event-pipeline.md)
+- [SMC Engine Module Reference](./smc-engine-module-reference.md)
+- [SMC Engine Extensions](./smc-engine-extensions.md)
+- [SMC Engine Verification](./smc-engine-verification.md)
+- [SMC Engine Usage Guide](./smc-engine-usage-guide.md)
+
+## Core Engine Modules
 
 | Module | Role |
 |---|---|
+| `src/smc_engine/events.py` | Shared immutable event contracts |
 | `src/smc_engine/swings.py` | Confirmed Williams/fractal swings with explicit activation time |
 | `src/smc_engine/displacement.py` | Causal ATR and range-expansion metrics |
 | `src/smc_engine/structure.py` | BOS/CHoCH state machine with full-lifecycle trend |
@@ -22,33 +40,31 @@ bias, and premium/discount logic now lives in `src/smc_engine/`.
 | `src/smc_engine/fvg.py` | Three-candle fair value gaps with touch/fill lifecycle |
 | `src/smc_engine/context.py` | Structure-derived bias Series and dealing-range P/D context |
 
+## Extension Layers
+
+| Module | Role |
+|---|---|
+| `src/smc_engine/breaker_blocks.py` | Pure breaker promotion layer over invalidated OBs |
+| `src/smc_engine/ob_body_mode.py` | Pure full/body geometry transform for OB zones |
+| `src/smc_engine/regime.py` | Lightweight regime heuristic for OB vs breaker switching |
+
 ## API Guarantees
 
-- **Events are immutable**. Each event records `activation_timestamp` and
-  `origin_timestamp` separately; consumers never reconstruct confirmation
-  timing.
-- **Lifecycle queries are as-of-time**. OB and FVG expose
-  `is_active_at(ts)` / `is_first_test_at(ts)`; backtesters and the UI
-  must use them instead of terminal mitigation flags.
-- **Higher-timeframe alignment is completed-bar**. The daily and H4 bias
-  states are merged onto M15 only after the corresponding HTF bar closes
-  (`pd.merge_asof(...direction="backward")`).
-
-## Adapter Cutover
-
-`src/smc_signals.py` is now a thin compatibility adapter that exposes the
-six-key dict, the `SMCSignals` class, and `get_smc_overlays()`. The legacy
-`Signal` dataclass shape is preserved.
+- **Events are immutable.** Consumers receive typed dataclasses and must use
+  their activation fields directly.
+- **Lifecycle queries are as-of-time.** OB and FVG expose
+  `is_active_at(ts)` / `is_first_test_at(ts)`; historical decisions must use
+  them instead of terminal flags.
+- **Higher-timeframe alignment is completed-bar only.** Daily and H4 bias are
+  merged onto M15 only after the corresponding HTF bar closes.
+- **Compatibility surface is preserved.** `src/smc_signals.py` keeps the
+  legacy `Signal` shape and `SMCSignals.get_signals()` signature; breaker
+  overlays are additive via `get_breaker_overlays()`.
 
 ## Verification
 
-- `pytest tests/` covers swing, structure, sweeps, OB, FVG, displacement,
-  context, and the legacy backtest regression.
-- Backtest tests use only characterization thresholds; PF, winrate, and
-  max DD are reported for review, not gates.
-
-## External Dependencies
-
-`smartmoneyconcepts` has been removed from `requirements.txt`. The runtime
-stack now consists of `pandas`, `numpy`, `pyarrow`, `ta`, `sqlalchemy`,
-`pyyaml`, `streamlit`, `plotly`, plus standard library utilities.
+- Current suite: **197 passed**
+- Baseline smoke checksum:
+  `4d6a95cff910bbcbe857af34d07f0289529d514177fb5c607176c38eb565cb0a`
+- Breaker and body-mode layers are tested separately and do not mutate the
+  default baseline when disabled
