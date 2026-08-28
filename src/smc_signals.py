@@ -57,6 +57,26 @@ class Signal:
     bottom: Optional[float] = None
 
 
+@dataclass
+class BreakerSignal:
+    """Breaker Block signal exposed via ``SMCSignals.get_breaker_overlays``.
+
+    Mirrors the legacy ``Signal`` schema (timestamp/price/direction/top/
+    bottom) plus breaker-specific provenance. ``role_flip_timestamp``
+    identifies the CHoCH bar that promoted the underlying invalidated OB;
+    ``ob_id`` traces back to the original OrderBlockEvent.
+    """
+
+    timestamp: datetime
+    price: float
+    direction: str
+    top: float
+    bottom: float
+    mitigated: bool = False
+    ob_id: int = 0
+    role_flip_timestamp: Optional[datetime] = None
+
+
 EMPTY_SIGNAL_DICT: Dict[str, List[Signal]] = {
     "bos": [],
     "choch": [],
@@ -256,6 +276,50 @@ class SMCSignals:
         signals["ob"] = [s for s in signals["ob"] if not s.mitigated]
         signals["fvg"] = [s for s in signals["fvg"] if not s.mitigated]
         return signals
+
+    def get_breaker_overlays(
+        self,
+        df: pd.DataFrame,
+        promotion_lookback_bars: int = 50,
+    ) -> List[BreakerSignal]:
+        """Return breaker-block zones promoted from invalidated OBs after a
+        subsequent CHoCH. Plan 13, Phase 5.
+
+        Backwards-compatible: does NOT modify ``get_signals()`` output.
+        Each BreakerSignal mirrors the legacy Signal schema
+        (timestamp/price/direction/top/bottom) plus breaker-specific
+        provenance (ob_id, role_flip_timestamp).
+        """
+        from smc_engine.breaker_blocks import promote_breakers_with_events
+        if df.empty or len(df) < (self._left + self._right + 1):
+            return []
+        overlays = compute_overlays(
+            df,
+            swing_left=self._left,
+            swing_right=self._right,
+            displacement_atr_mult=self.displacement_atr_mult,
+            sweep_atr_buffer=self.sweep_atr_buffer,
+        )
+        breakers, _diag = promote_breakers_with_events(
+            overlays["order_blocks"],
+            overlays["structure"],
+            df.index,
+            promotion_lookback_bars=promotion_lookback_bars,
+        )
+        out: List[BreakerSignal] = []
+        for b in breakers:
+            ts = _to_datetime(b.role_flip_timestamp)
+            out.append(BreakerSignal(
+                timestamp=ts,
+                price=float(b.bottom),
+                direction=b.direction,
+                top=float(b.top),
+                bottom=float(b.bottom),
+                mitigated=False,
+                ob_id=b.ob_id,
+                role_flip_timestamp=ts,
+            ))
+        return out
 
 
 def get_smc_overlays(

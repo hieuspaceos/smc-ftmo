@@ -176,6 +176,44 @@ def run_backtest(
     require_bias_aligned = bool(
         strat_cfg.get("require_bias_aligned", config.get("require_bias_aligned", True))
     )
+    # Plan 14 regime-aware strategy:
+    #   regime_mode="off"  -> breaker overlay disabled (legacy baseline).
+    #   regime_mode="on"   -> breaker overlay always enabled.
+    #   regime_mode="auto" -> regime detection picks weights from data.
+    regime_mode = str(
+        strat_cfg.get("regime_mode", config.get("regime_mode", "off"))
+    )
+    if regime_mode not in ("off", "on", "auto"):
+        raise ValueError(
+            f"regime_mode must be off|on|auto, got {regime_mode!r}"
+        )
+    promotion_lookback_bars = int(
+        strat_cfg.get(
+            "promotion_lookback_bars",
+            config.get("promotion_lookback_bars", 50),
+        )
+    )
+    # Bias mode controls how strictly daily+H4 must agree:
+    #   'strict'     -> D+H4 must agree (legacy); require_bias_aligned must be True.
+    #   'h4_only'    -> trade by H4 alone; D neutral is allowed, D counter-trend is blocked.
+    #   'any'        -> trade if any single TF has a bias; require_bias_aligned must be False.
+    # Falls back to legacy 'strict' when absent.
+    bias_mode = strat_cfg.get("bias_mode", config.get("bias_mode", "strict"))
+    if bias_mode not in ("strict", "h4_only", "any"):
+        bias_mode = "strict"
+    raw_tp_stages = strat_cfg.get("partial_tp") or config.get("partial_tp")
+    if isinstance(raw_tp_stages, list) and raw_tp_stages:
+        try:
+            tp_stages = tuple(
+                (float(stage["r"]), float(stage["pct"])) for stage in raw_tp_stages
+            )
+        except (KeyError, TypeError, ValueError):
+            tp_stages = PartialTPExit.DEFAULT_STAGES
+    elif isinstance(raw_tp_stages, tuple) and raw_tp_stages:
+        tp_stages = raw_tp_stages
+    else:
+        tp_stages = PartialTPExit.DEFAULT_STAGES
+
 
     filters = config.get("filters", {}) if isinstance(config.get("filters"), dict) else {}
     sweep_filter = bool(filters.get("sweep", False))
@@ -279,6 +317,26 @@ def run_backtest(
     structure_m15 = detect_structure(df_m15, swings_m15, atr=atr_all)
     order_blocks_full = detect_order_blocks(df_m15, structure_m15, expansion_m15)
     fvgs_full = detect_fvgs(df_m15)
+    # Plan 14 regime-aware: detect regime from data when auto mode. Plan 13
+    # breaker layer is pure-function post-process; lazy import keeps the
+    # off-mode path dependency-free for the baseline.
+    breakers_list: list = []
+    breaker_threshold: float = 1.0  # when regime_mode="on", all breakers accepted
+    if regime_mode != "off":
+        from smc_engine.breaker_blocks import promote_breakers_with_events
+        breakers_list, _breaker_diags = promote_breakers_with_events(
+            order_blocks_full,
+            structure_m15,
+            df_m15.index,
+            promotion_lookback_bars=promotion_lookback_bars,
+        )
+        if regime_mode == "auto":
+            from smc_engine.regime import detect_regime
+            regime = detect_regime(df_m15)
+            # Threshold on the deterministic hash of the breaker ob_id.
+            # breaker_weight=1.0 -> always include; =0.0 -> never include.
+            # Mid values select a deterministic subset for reproducibility.
+            breaker_threshold = max(0.0, min(1.0, regime.breaker_weight))
     context_m15 = compute_dealing_range_context(df_m15, structure_m15)
     pd_zone_engine_series = context_m15.zone.reindex(df_m15.index).fillna("neutral")
 
@@ -322,10 +380,26 @@ def run_backtest(
         atr_now = float(atr_all.iloc[i]) if i < len(atr_all) else 0.0
 
         # Direction. Engine bias enum: bull/bear/neutral.
+        # bias_mode:
+        #   strict  -> legacy: aligned_bias from D+H4 must agree.
+        #   h4_only -> trade on H4 direction when D is neutral; block counter-trend.
+        #   any     -> trade on any single TF bias (legacy require_bias_aligned=False branch).
         if aligned_bias == "aligned_long":
             trade_dir = "long"
         elif aligned_bias == "aligned_short":
             trade_dir = "short"
+        elif bias_mode == "h4_only":
+            # Trade on H4 alone, but only when D is not counter-trend.
+            if bias_d == "bear" and bias_h4 == "bull":
+                trade_dir = None  # D counter-trend vs H4 -> skip
+            elif bias_d == "bull" and bias_h4 == "bear":
+                trade_dir = None  # D counter-trend vs H4 -> skip
+            elif bias_h4 == "bull":
+                trade_dir = "long"
+            elif bias_h4 == "bear":
+                trade_dir = "short"
+            else:
+                trade_dir = None
         elif not require_bias_aligned:
             if bias_d == "bull" or bias_h4 == "bull":
                 trade_dir = "long"
@@ -353,6 +427,30 @@ def run_backtest(
                     "top": float(ev.top),
                     "bottom": float(ev.bottom),
                 })
+            # Plan 14 regime-aware: append active breakers in the same
+            # direction. A breaker is entry-eligible when its
+            # role_flip_timestamp is at or before the current bar. Under
+            # regime_mode="auto", a deterministic hash of the breaker
+            # ``ob_id`` decides whether this regime includes the breaker
+            # (mixing OB-classic and breaker entries by regime weight).
+            if breakers_list:
+                for br in breakers_list:
+                    if br.direction != target:
+                        continue
+                    if ts < br.role_flip_timestamp:
+                        continue
+                    if breaker_threshold < 1.0:
+                        # Deterministic inclusion: hash(ob_id) / LARGE in [0,1)
+                        # <= threshold -> include.
+                        _hash = (br.ob_id * 2654435761) & 0xFFFFFFFF
+                        _bucket = _hash / 0xFFFFFFFF
+                        if _bucket > breaker_threshold:
+                            continue
+                    ob_zones_now.append({
+                        "direction": br.direction,
+                        "top": float(br.top),
+                        "bottom": float(br.bottom),
+                    })
         ob_top: float | None = ob_zones_now[-1]["top"] if ob_zones_now else None
         ob_bottom: float | None = ob_zones_now[-1]["bottom"] if ob_zones_now else None
 
@@ -374,11 +472,7 @@ def run_backtest(
             entry_allowed = False
         if pd_filter and not in_pd_zone:
             entry_allowed = False
-        if first_test_filter and not first_test:
-            entry_allowed = False
-        if rr_target > 4.0:
-            entry_allowed = False
-
+        # (rr_target cap removed: TP ladder now comes from tp_stages in config)
         snapshot = {
             "side_request": trade_dir,
             "score": score,
@@ -398,6 +492,7 @@ def run_backtest(
             "reasons": reasons,
             "pair": pair,
             "sl_atr_buffer": sl_atr_buffer,
+            "tp_stages": tp_stages,
         }
 
         # Update open position
@@ -466,6 +561,7 @@ def run_backtest(
                         sl=entry_info["sl"],
                         side=entry_info["side"],
                         atr_buffer=sl_atr_buffer,
+                        tp_stages=tp_stages,
                     )
                     open_pos = {
                         **entry_info,

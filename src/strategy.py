@@ -33,25 +33,33 @@ def pip_value_for_pair(pair: str) -> float:
 # Partial TP Exit
 # ---------------------------------------------------------------------------
 
-
 @dataclass
 class PartialTPExit:
-    """Track a single open position through 40/30/30 partial TP ladder.
+    """Track a single open position through a parameterized partial TP ladder.
 
     Long:    profit_r = (price - entry) / sl_distance
     Short:   profit_r = (entry - price) / sl_distance
 
-    Stages (per unified plan / config.yaml):
+    Stages are configurable via `tp_stages`: a list of
+    ``(r_multiple, close_pct_of_remaining)`` tuples evaluated in order.
+    Default ladder matches the legacy 40/30/30 plan:
+
       - hit 2R with full position  -> close 40%, move SL to entry (BE).
-      - hit 3R with 60% remaining -> close half of remaining (= 30% original).
+      - hit 3R with 60% remaining -> close 50% of remaining (= 30% original).
       - hit 4R with 30% remaining -> close 100% of remaining.
       - SL hit                    -> close all remaining.
 
+    The first stage (lowest r_multiple) always moves SL to entry (BE) — this
+    is the core risk-neutralisation rule and only applies to stage index 0.
+    Later stages are pure take-profit.
+
     Actions emitted by update():
       ('close_pct', fraction)  fraction is fraction-of-current-position to close.
-      ('move_sl', new_sl)      emitted together with the 2R stage.
+      ('move_sl', new_sl)      emitted together with stage 0.
       ('closed', reason)       when position is fully closed; reason in {'tp1','tp2','tp3','sl'}.
     """
+
+    DEFAULT_STAGES = ((2.0, 0.40), (3.0, 0.50), (4.0, 1.0))
 
     entry: float
     sl: float
@@ -60,8 +68,9 @@ class PartialTPExit:
     remaining_pct: float = 1.0
     be_moved: bool = False
     closed: bool = False
-    stage: int = 0  # 0 open, 1 tp1 hit, 2 tp2 hit, 3 closed
+    stage: int = 0  # 0 = open, N = N stages hit (max = len(tp_stages))
     last_close_price: float = 0.0
+    tp_stages: tuple = ()  # populated in __post_init__; public for tests/inspection
 
     def __post_init__(self) -> None:
         self.sl_distance = abs(self.entry - self.sl)
@@ -70,6 +79,14 @@ class PartialTPExit:
         self.side = self.side.lower()
         if self.side not in ("long", "short"):
             raise ValueError("side must be 'long' or 'short'")
+        if not self.tp_stages:
+            self.tp_stages = self.DEFAULT_STAGES
+        # Validate: strictly ascending r_multiple; close_pct in (0, 1].
+        rs = [r for r, _ in self.tp_stages]
+        if rs != sorted(rs) or any(r <= 0 for r in rs):
+            raise ValueError(f"tp_stages r_multiples must be strictly ascending > 0: {self.tp_stages}")
+        if not all(0.0 < p <= 1.0 for _, p in self.tp_stages):
+            raise ValueError(f"tp_stages close_pct must be in (0, 1]: {self.tp_stages}")
 
     # ------------------------------------------------------------------ utils
 
@@ -106,35 +123,28 @@ class PartialTPExit:
             self.remaining_pct = 0.0
             self.closed = True
             return actions
-        # ---- TP stages — must check in order; stages are monotonic.
+        # ---- TP stages — driven by self.tp_stages, evaluated in order.
+        # One stage per bar to avoid path-dependence surprises (matches legacy).
         # 1e-9 epsilon absorbs floating-point noise on exact-R boundaries.
-        if self.stage == 0 and r + 1e-9 >= 2.0:
-            # 40% at 2R with BE move.
-            actions.append(("close_pct", 0.40))
-            actions.append(("move_sl", self.entry))
-            self.remaining_pct = 0.60
-            self.be_moved = True
-            self.sl = self.entry
-            self.stage = 1
-            actions.append(("partial", "tp1"))
-            return actions  # one stage per bar to avoid path-dependence surprises.
-
-        if self.stage == 1 and r + 1e-9 >= 3.0:
-            # 30% of original (= 50% of remaining 60%).
-            actions.append(("close_pct", 0.50))
-            self.remaining_pct = 0.30
-            self.stage = 2
-            actions.append(("partial", "tp2"))
-            return actions
-
-        if self.stage == 2 and r + 1e-9 >= 4.0:
-            # Remaining 30% closed at 4R.
-            actions.append(("close_pct", 1.0))
-            self.remaining_pct = 0.0
-            self.stage = 3
-            self.closed = True
-            actions.append(("closed", "tp3"))
-            return actions
+        n_stages = len(self.tp_stages)
+        if self.stage < n_stages:
+            target_r, close_pct = self.tp_stages[self.stage]
+            if r + 1e-9 >= target_r:
+                actions.append(("close_pct", close_pct))
+                # Move SL to entry only on the first stage (BE rule).
+                if self.stage == 0:
+                    actions.append(("move_sl", self.entry))
+                    self.be_moved = True
+                    self.sl = self.entry
+                self.remaining_pct *= max(0.0, 1.0 - close_pct)
+                tag = f"tp{self.stage+1}"
+                self.stage += 1
+                if self.remaining_pct <= 1e-9:
+                    self.closed = True
+                    actions.append(("closed", tag))
+                else:
+                    actions.append(("partial", tag))
+                return actions
 
         return actions
 
@@ -205,15 +215,23 @@ def check_entry(snapshot: Dict) -> Optional[Dict]:
         return None
 
     risk_per_unit = abs(entry - sl)
-    # TP ladder: 2R / 3R / 4R
+    # TP ladder from snapshot (falls back to legacy 2R/3R/4R if absent).
+    # snapshot["tp_stages"] is a sequence of (r_multiple, close_pct_of_remaining).
+    # We surface only the first 3 R-multiples as tp1/tp2/tp3 — these are
+    # informational for the journal; the live ladder is enforced by
+    # PartialTPExit using the full tp_stages tuple.
+    tp_stages = snapshot.get("tp_stages") or PartialTPExit.DEFAULT_STAGES
+    target_rs = [r for r, _ in tp_stages[:3]]
+    while len(target_rs) < 3:
+        target_rs.append(target_rs[-1] if target_rs else 4.0)
     if side == "long":
-        tp1 = entry + 2.0 * risk_per_unit
-        tp2 = entry + 3.0 * risk_per_unit
-        tp3 = entry + 4.0 * risk_per_unit
+        tp1 = entry + target_rs[0] * risk_per_unit
+        tp2 = entry + target_rs[1] * risk_per_unit
+        tp3 = entry + target_rs[2] * risk_per_unit
     else:
-        tp1 = entry - 2.0 * risk_per_unit
-        tp2 = entry - 3.0 * risk_per_unit
-        tp3 = entry - 4.0 * risk_per_unit
+        tp1 = entry - target_rs[0] * risk_per_unit
+        tp2 = entry - target_rs[1] * risk_per_unit
+        tp3 = entry - target_rs[2] * risk_per_unit
 
     reasons = list(snapshot.get("reasons", []))
     return {
@@ -223,6 +241,7 @@ def check_entry(snapshot: Dict) -> Optional[Dict]:
         "tp1": tp1,
         "tp2": tp2,
         "tp3": tp3,
+        "tp_stages": tuple(tp_stages),
         "ob_top": ob_top,
         "ob_bottom": ob_bottom,
         "risk_per_unit": risk_per_unit,

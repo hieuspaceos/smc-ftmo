@@ -143,10 +143,19 @@ def build_main_chart(
         )
     )
 
+    # Cap overlay counts to keep Plotly responsive. The engine can produce
+    # thousands of FVGs / displacements on a 15 895-bar dataset, but the
+    # visual chart only needs the most recent ones to convey structure.
+    # The full signal set still drives run_backtest via _compute_overlays,
+    # so this cap is purely cosmetic — it does NOT alter trade selection.
+    view_start = df.index[0]
+    view_end = df.index[-1]
+    in_view = lambda sig: view_start <= getattr(sig, "timestamp", view_start) <= view_end
+    OB_CAP, FVG_CAP, BOS_CAP, CHOCH_CAP, DISP_CAP = 60, 200, 100, 50, 200
+
     # --- Order Blocks (blue rectangles, mitigation-aware) ---
-    for ob in signals.get("ob", []):
-        if getattr(ob, "mitigated", False):
-            continue
+    active_obs = [o for o in signals.get("ob", []) if in_view(o) and not getattr(o, "mitigated", False)]
+    for ob in active_obs[-OB_CAP:]:
         fig.add_shape(
             type="rect", x0=ob.timestamp, x1=df.index[-1],
             y0=ob.price * 0.999, y1=ob.price * 1.001,
@@ -154,59 +163,88 @@ def build_main_chart(
             fillcolor="rgba(0, 80, 255, 0.25)", layer="below",
         )
 
-    # --- Fair Value Gaps (yellow rectangles) ---
-    for fvg in signals.get("fvg", []):
-        if getattr(fvg, "mitigated", False):
-            continue
-        fig.add_shape(
-            type="rect", x0=fvg.timestamp, x1=df.index[-1],
-            y0=fvg.price * 0.9995, y1=fvg.price * 1.0005,
-            line=dict(color="rgba(0,0,0,0)"),
-            fillcolor="rgba(255, 215, 0, 0.30)", layer="below",
-        )
+    # --- Fair Value Gaps (yellow Bar trace) ---
+    active_fvgs = [f for f in signals.get("fvg", []) if in_view(f) and not getattr(f, "mitigated", False)]
+    if active_fvgs:
+        fig.add_trace(go.Bar(
+            x=[f.timestamp for f in active_fvgs[-FVG_CAP:]],
+            y=[1.0] * min(len(active_fvgs), FVG_CAP),
+            marker_color="rgba(255, 215, 0, 0.30)",
+            name="FVG", showlegend=True, hoverinfo="skip",
+        ))
 
-    # --- BOS / CHoCH arrows ---
-    for sig in signals.get("bos", []):
-        col = "green" if sig.direction == "bullish" else "red"
-        fig.add_annotation(
-            x=sig.timestamp, y=sig.price,
-            text="▲" if sig.direction == "bullish" else "▼",
-            showarrow=True, arrowhead=2, arrowcolor=col, font=dict(color=col, size=14),
-        )
-    for sig in signals.get("choch", []):
-        col = "lime" if sig.direction == "bullish" else "orangered"
-        fig.add_annotation(
-            x=sig.timestamp, y=sig.price, text="CH",
-            showarrow=False, font=dict(color=col, size=10),
-        )
-
-    # --- Sweep markers ---
+    # --- BOS / CHoCH (vectorized scatter+text, no per-event add_annotation) ---
+    bos_sigs = [s for s in signals.get("bos", []) if in_view(s)][-BOS_CAP:]
+    bos_bull = [(s.timestamp, s.price) for s in bos_sigs if s.direction == "bullish"]
+    bos_bear = [(s.timestamp, s.price) for s in bos_sigs if s.direction != "bullish"]
+    if bos_bull:
+        fig.add_trace(go.Scatter(
+            x=[t for t, _ in bos_bull], y=[p for _, p in bos_bull],
+            mode="markers+text", text=["▲"] * len(bos_bull),
+            textposition="top center", textfont=dict(color="green", size=14),
+            marker=dict(symbol="triangle-up", color="green", size=10),
+            name="BOS ↑", showlegend=True, hoverinfo="skip",
+        ))
+    if bos_bear:
+        fig.add_trace(go.Scatter(
+            x=[t for t, _ in bos_bear], y=[p for _, p in bos_bear],
+            mode="markers+text", text=["▼"] * len(bos_bear),
+            textposition="bottom center", textfont=dict(color="red", size=14),
+            marker=dict(symbol="triangle-down", color="red", size=10),
+            name="BOS ↓", showlegend=True, hoverinfo="skip",
+        ))
+    choch_sigs = [s for s in signals.get("choch", []) if in_view(s)][-CHOCH_CAP:]
+    ch_bull = [(s.timestamp, s.price) for s in choch_sigs if s.direction == "bullish"]
+    ch_bear = [(s.timestamp, s.price) for s in choch_sigs if s.direction != "bullish"]
+    if ch_bull:
+        fig.add_trace(go.Scatter(
+            x=[t for t, _ in ch_bull], y=[p for _, p in ch_bull],
+            mode="text", text=["CH"] * len(ch_bull),
+            textposition="top center", textfont=dict(color="lime", size=10),
+            name="CHoCH ↑", showlegend=True, hoverinfo="skip",
+        ))
+    if ch_bear:
+        fig.add_trace(go.Scatter(
+            x=[t for t, _ in ch_bear], y=[p for _, p in ch_bear],
+            mode="text", text=["CH"] * len(ch_bear),
+            textposition="bottom center", textfont=dict(color="orangered", size=10),
+            name="CHoCH ↓", showlegend=True, hoverinfo="skip",
+        ))
+    # Sweep markers: bull / bear into two Scatter traces (was 754 traces).
+    sweep_bull_x, sweep_bull_y, sweep_bear_x, sweep_bear_y = [], [], [], []
     for sig in signals.get("sweep", []):
-        col = "cyan" if sig.direction == "bullish" else "magenta"
-        fig.add_trace(
-            go.Scatter(
-                x=[sig.timestamp], y=[sig.price], mode="markers",
-                marker=dict(symbol="x", color=col, size=11),
-                name="Sweep", showlegend=False,
-                hovertemplate="Sweep %s @ %s<br>price=%.5f<extra></extra>"
-                % (sig.direction, sig.timestamp, sig.price),
-            )
-        )
+        if in_view(sig):
+            if sig.direction == "bullish":
+                sweep_bull_x.append(sig.timestamp); sweep_bull_y.append(sig.price)
+            else:
+                sweep_bear_x.append(sig.timestamp); sweep_bear_y.append(sig.price)
+    if sweep_bull_x:
+        fig.add_trace(go.Scatter(
+            x=sweep_bull_x, y=sweep_bull_y, mode="markers",
+            marker=dict(symbol="x", color="cyan", size=11),
+            name="Sweep ↑", showlegend=True,
+            hovertemplate="Sweep bull @ %{x}<br>price=%{y:.5f}<extra></extra>",
+        ))
+    if sweep_bear_x:
+        fig.add_trace(go.Scatter(
+            x=sweep_bear_x, y=sweep_bear_y, mode="markers",
+            marker=dict(symbol="x", color="magenta", size=11),
+            name="Sweep ↓", showlegend=True,
+            hovertemplate="Sweep bear @ %{x}<br>price=%{y:.5f}<extra></extra>",
+        ))
 
-    # --- Displacement highlights (large green/red candles outline) ---
-    if signals.get("displacement"):
-        disp_ts = [s.timestamp for s in signals["displacement"]]
-        disp_col = [
-            "rgba(0,200,0,0.10)" if s.direction == "bullish" else "rgba(200,0,0,0.10)"
-            for s in signals["displacement"]
-        ]
-        fig.add_trace(
-            go.Bar(
-                x=disp_ts, y=[1] * len(disp_ts), marker_color=disp_col,
-                opacity=0.25, name="Displacement", showlegend=True,
-                hoverinfo="skip",
-            )
-        )
+    # Displacement highlights: cap to most recent DISP_CAP, single Bar trace.
+    disp_in_view = [d for d in signals.get("displacement", []) if in_view(d)][-DISP_CAP:]
+    if disp_in_view:
+        fig.add_trace(go.Bar(
+            x=[d.timestamp for d in disp_in_view],
+            y=[1.0] * len(disp_in_view),
+            marker_color=[
+                "rgba(0,200,0,0.10)" if d.direction == "bullish" else "rgba(200,0,0,0.10)"
+                for d in disp_in_view
+            ],
+            opacity=0.25, name="Displacement", showlegend=True, hoverinfo="skip",
+        ))
 
     # --- Premium / Discount zones ---
     pd_state = detect_premium_discount(df, lookback=params.get("pd_lookback", 50))
@@ -231,7 +269,6 @@ def build_main_chart(
     )
     return fig
 
-
 def _plot_equity(equity_curve: list) -> go.Figure:
     if not equity_curve:
         return go.Figure().update_layout(title="Equity curve (no data)", height=300)
@@ -255,9 +292,11 @@ CONFIG = _load_config()
 risk_cfg = CONFIG.get("risk", {})
 strat_cfg = CONFIG.get("strategy", {})
 
-st.title("SMC FTMO Backtester")
-
 # -------------------- SIDEBAR --------------------
+# Pair + timeframe need to be picked before loading data, so they live in a
+# compact sidebar block at the top. The remaining widgets (SMC params,
+# filters, risk, period, Run Backtest) render after data is loaded so they
+# can drive defaults from the selected timeframe's parquet range.
 with st.sidebar:
     st.header("Settings")
     pairs = get_available_pairs()
@@ -266,13 +305,55 @@ with st.sidebar:
     timeframe = st.selectbox("Timeframe", timeframes, index=3,
                              help="Chart timeframe for the main panel.")
 
+# -------------------- LOAD DATA --------------------
+data = _cached_multi_tf(pair)
+if not data:
+    st.error(f"No data files for {pair}. Run download_data first.")
+    st.stop()
+
+if timeframe not in data:
+    timeframe = "M15" if "M15" in data else next(iter(data.keys()))
+
+data_range = data[timeframe].index
+data_start = data_range.min().date()
+data_end = data_range.max().date()
+
+# -------------------- SIDEBAR (remaining widgets) --------------------
+
+# Pair / timeframe were picked above; rest of widgets live here so they
+# can use data_start / data_end from the loaded parquet range.
+with st.sidebar:
     st.subheader("SMC Params")
     swing_length = st.slider("Swing length", 5, 50,
                              strat_cfg.get("swing_length", 10),
                              help=RULE_TOOLTIPS["swing_length"])
-    rr_target = st.slider("Risk:Reward", 1.0, 6.0,
-                          float(strat_cfg.get("rr_target", 2.5)),
-                          help=RULE_TOOLTIPS["rr_target"])
+    # TP profile replaces the legacy single rr_target slider. The ladder
+    # maps each preset to (r_multiple, close_pct_of_remaining) tuples,
+    # passed via run_cfg["strategy"]["partial_tp"] into backtester.
+    tp_profiles = {
+        "Conservative (2R/3R/4R)": (
+            {"pct": 0.40, "r": 2.0},
+            {"pct": 0.50, "r": 3.0},
+            {"pct": 1.00, "r": 4.0},
+        ),
+        "Balanced (3R/5R/8R)": (
+            {"pct": 0.40, "r": 3.0},
+            {"pct": 0.50, "r": 5.0},
+            {"pct": 1.00, "r": 8.0},
+        ),
+        "Aggressive (4R/7R/12R)": (
+            {"pct": 0.40, "r": 4.0},
+            {"pct": 0.50, "r": 7.0},
+            {"pct": 1.00, "r": 12.0},
+        ),
+    }
+    tp_profile = st.selectbox(
+        "TP profile",
+        list(tp_profiles.keys()),
+        index=0,
+        help="Partial TP ladder. Higher R targets = lower winrate, higher avg R.",
+    )
+    partial_tp = list(tp_profiles[tp_profile])
     displacement_thr = st.slider("Displacement ATR mult", 1.0, 3.0,
                                  float(strat_cfg.get("displacement_atr_mult", 1.5)),
                                  help=RULE_TOOLTIPS["displacement_thr"])
@@ -285,15 +366,42 @@ with st.sidebar:
     min_score = st.slider("Min confluence score", 1, 5,
                           int(strat_cfg.get("min_confluence_score", 4)),
                           help=RULE_TOOLTIPS["min_score"])
-    bias_filter = st.checkbox("Bias aligned only", True,
-                              help="Rule 1 — only trade when D+H4 agree.")
-    sweep_filter = st.checkbox("Sweep clean only", False,
-                               help="Rule 3 — filter setups with clean liquidity sweep.")
-    pd_filter = st.checkbox("In P/D zone only", False,
-                            help="Rule 4 — long only in discount, short only in premium.")
-    first_test_filter = st.checkbox("First test only", False,
-                                    help="Rule 5 — only enter on first touch of OB/FVG.")
-
+    bias_mode = st.selectbox(
+        "Bias mode",
+        ["strict (D+H4)", "h4_only", "any"],
+        index=0,
+        help=(
+            "strict = D+H4 cùng chiều (Rule 1 truyền thống). "
+            "h4_only = theo H4 khi D neutral; chặn counter-trend. "
+            "any = trade theo bất kỳ TF nào (nới lỏng)."
+        ),
+    )
+    # Plan 14: regime-aware breaker overlay. "off" = baseline; "on" =
+    # always include breaker zones; "auto" = regime detection picks from
+    # data. EURUSD M15 2026 classifies as ranging despite bull bias, so
+    # "auto" matches "on" on this dataset.
+    regime_mode = st.selectbox(
+        "Regime mode (breakers)",
+        ["off", "on", "auto"],
+        index=0,
+        help=(
+            "off = baseline OB-classic only. on = always layer breaker "
+            "zones (Plan 13). auto = derive regime from data via "
+            "directional_move_ratio + choppiness (Plan 14)."
+        ),
+    )
+    promotion_lookback = st.slider(
+        "Breaker promotion lookback",
+        10, 200, 50, 5,
+        help="Max bars between OB origin and CHoCH for breaker promotion.",
+    )
+    # Filters removed: sweep_clean, in_PD_zone, first_test are redundant or
+    # anti-edge on EURUSD M15 (verified empirically). Confluence score and
+    # OB lifecycle already enforce the underlying logic.
+    sweep_filter = False
+    pd_filter = False
+    first_test_filter = False
+    bias_filter = bias_mode in ("strict (D+H4)", "h4_only")
     st.subheader("Risk (FTMO)")
     risk_pct = st.slider("Risk % per trade", 0.1, 2.0,
                          float(risk_cfg.get("per_trade_pct", 0.0055)) * 100, 0.05,
@@ -309,21 +417,15 @@ with st.sidebar:
 
     st.subheader("Period")
     col_a, col_b = st.columns(2)
-    start_date = col_a.date_input("Start", value=pd.Timestamp("2023-01-01").date())
-    end_date = col_b.date_input("End", value=pd.Timestamp("2024-12-31").date())
+    start_date = col_a.date_input("Start", value=data_start,
+                                  min_value=data_start, max_value=data_end,
+                                  help="Inclusive start date for the backtest window.")
+    end_date = col_b.date_input("End", value=data_end,
+                                min_value=data_start, max_value=data_end,
+                                help="Inclusive end date for the backtest window.")
 
     run_btn = st.button("Run Backtest", type="primary",
                         help="Run full pipeline on selected pair/timeframe.")
-
-# -------------------- LOAD DATA --------------------
-data = _cached_multi_tf(pair)
-if not data:
-    st.error(f"No data files for {pair}. Run download_data first.")
-    st.stop()
-
-if timeframe not in data:
-    timeframe = "M15" if "M15" in data else next(iter(data.keys()))
-
 # -------------------- TOP: 4 mini charts + bias panel --------------------
 st.subheader("Multi-Timeframe Bias")
 biases = detect_bias_multi_tf(data, swing_length=swing_length)
@@ -363,19 +465,19 @@ if start_date and end_date:
         main_df_view = main_df.tail(500)
 else:
     main_df_view = main_df.tail(500)
-
+# Cap the visible chart to keep Plotly responsive; full-period signals
+# still drive run_backtest via the Period widget, so capping only affects
+# the visual overlay density, not the trade count.
+CHART_MAX_BARS = 1500
+if len(main_df_view) > CHART_MAX_BARS:
+    main_df_view = main_df_view.tail(CHART_MAX_BARS)
 signals = _compute_overlays(
     pair, timeframe,
     str(start_date) if start_date else "",
     str(end_date) if end_date else "",
     swing_length, displacement_thr, sweep_buf,
 )
-fig = build_main_chart(main_df_view, signals, {"pd_lookback": pd_lookback}, pair, timeframe)
-st.plotly_chart(fig, use_container_width=True, key=f"main_{pair}_{timeframe}_{swing_length}")
-
-# -------------------- BACKTEST --------------------
 st.subheader("Backtest Results")
-
 run_cfg = {
     "ftmo": {"account_size": 100000, "phase": "challenge",
              "profit_target": 0.10, "max_daily_loss": 0.05,
@@ -384,17 +486,16 @@ run_cfg = {
              "daily_loss_limit_r": float(daily_limit_r),
              "max_open_positions": 1},
     "strategy": {
-        "swing_length": int(swing_length), "rr_target": float(rr_target),
+        "swing_length": int(swing_length),
+        "rr_target": float(partial_tp[-1]["r"]),
         "displacement_atr_mult": float(displacement_thr),
         "sweep_atr_buffer": float(sweep_buf),
         "min_confluence_score": int(min_score),
         "require_displacement": True, "require_bias_aligned": bias_filter,
         "sl_atr_buffer": float(sl_buffer),
-        "partial_tp": [
-            {"pct": 0.40, "r": 2.0, "move_sl_to": "entry"},
-            {"pct": 0.30, "r": 3.0, "move_sl_to": "entry"},
-            {"pct": 0.30, "r": 4.0, "move_sl_to": "entry"},
-        ],
+        "bias_mode": "strict" if bias_mode == "strict (D+H4)" else bias_mode,
+        "regime_mode": regime_mode,
+        "promotion_lookback_bars": int(promotion_lookback),
     },
     "confluence": {"weights": {"displacement": 1, "bias_aligned": 1,
                                 "sweep_clean": 1, "premium_discount": 1,
@@ -511,10 +612,11 @@ else:
 
 # -------------------- FOOTER --------------------
 st.caption(
-    "Rules: 1) Bias from D+H4 aligned · 2) Displacement > 1.5×ATR · 3) Sweep clean · "
-    "4) Premium/Discount zone · 5) First test · 6) SL = OB - 0.2×ATR · "
-    "7) Entry confluence ≥ 4/5 · 8) Partial TP 40/30/30 with BE at 2R · "
-    "9) Risk 0.55%, max 3 trades/day, -2R daily stop · "
-    "10) FTMO 5% daily / 10% total guard · 11) Session filter (LDN/NY) · "
-    "12) Journal every trade."
+    "Rules — Required: 1) Bias mode (strict/h4_only/any) · 2) BOS/CHoCH on M15 · "
+    "3) Displacement · 4) OB unmitigated (auto first-test) · "
+    "5) Confluence ≥ min_score · 6) SL = OB edge ± ATR buffer · "
+    "7) Partial TP per profile, BE on TP1 · "
+    "8) Regime mode (off/on/auto, Plan 14) — breaker overlay when on/auto · "
+    "9) Risk 0.55%/trade, max 3/day, -2R daily stop, FTMO 5%/10% guard · "
+    "10) Journal every trade."
 )
