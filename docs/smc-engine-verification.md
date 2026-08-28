@@ -7,6 +7,25 @@ updated: "2026-08-29"
 
 # SMC Engine Verification
 
+## Đọc nhanh bằng tiếng Việt
+
+Phần verify này trả lời câu hỏi:
+
+> \"Mình có thể tin engine này tới mức nào?\"
+
+Câu trả lời thực tế:
+
+- Có thể tin nó **đọc cấu trúc nhất quán**
+- Có thể tin nó **không nhìn tương lai**
+- Có thể tin nó **cho cùng input => cùng output**
+- Nhưng **không nên tin tuyệt đối** rằng backtest đẹp = sẽ kiếm tiền ngoài thị trường thật
+
+Nói dễ hiểu:
+
+- test pass = engine làm đúng luật nó đã định nghĩa
+- smoke checksum ổn = engine không bị drift ngẫu nhiên
+- winrate đẹp = chỉ là kết quả trên dataset hiện tại, chưa chắc là chân lý
+
 ## Test Inventory
 
 Current engine + integration coverage:

@@ -7,6 +7,30 @@ updated: "2026-08-29"
 
 # SMC Engine Event Pipeline
 
+## Đọc nhanh bằng tiếng Việt
+
+Nếu thấy file này khó vì nhiều thuật ngữ, hãy hiểu ngắn như sau:
+
+- `swings.py` tìm mốc đỉnh/đáy đủ rõ để gọi là cấu trúc
+- `structure.py` quyết định đó là BOS hay CHoCH
+- `order_blocks.py` chỉ sinh OB sau BOS, không sinh bừa
+- `breaker_blocks.py` chỉ lấy OB đã chết rồi cho “đổi vai” nếu có CHoCH đến sau
+- `context.py` biến cấu trúc thành bias + premium/discount
+
+Ý chính của whole pipeline:
+
+> Giá đi trước, engine chỉ đọc lại và gắn nhãn cấu trúc một cách causal.
+
+Tại sao phải đi nhiều bước như vậy?
+
+Vì nếu gộp hết thành “1 indicator”, bạn sẽ không biết lỗi nằm ở đâu:
+- swing sai?
+- BOS sai?
+- OB sai?
+- hay breaker promote quá sớm?
+
+Tách pipeline ra giúp mỗi bước có test riêng và dễ audit hơn.
+
 ## Core Rule
 
 Every event becomes visible only after the bar that confirms it closes.

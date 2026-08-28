@@ -46,8 +46,14 @@ The engine does **not** predict price. It does one job well:
 
 ## Read Next
 
+### Đọc nhanh bằng tiếng Việt trước
+
+- [SMC Engine Giải Thích Bằng Tiếng Việt](./smc-engine-vietnamese-guide.md)
+- [SMC Engine Usage Guide](./smc-engine-usage-guide.md)
+
+### Tài liệu kỹ thuật chi tiết
+
 - [SMC Engine Event Pipeline](./smc-engine-event-pipeline.md)
 - [SMC Engine Module Reference](./smc-engine-module-reference.md)
 - [SMC Engine Extensions](./smc-engine-extensions.md)
 - [SMC Engine Verification](./smc-engine-verification.md)
-- [SMC Engine Usage Guide](./smc-engine-usage-guide.md)

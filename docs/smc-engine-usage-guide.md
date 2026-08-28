@@ -7,6 +7,14 @@ updated: "2026-08-29"
 
 # SMC Engine Usage Guide
 
+## Nếu bạn muốn đọc dễ hơn trước
+
+Nếu file này vẫn còn nặng, đọc file tiếng Việt này trước:
+
+- [SMC Engine Giải Thích Bằng Tiếng Việt](./smc-engine-vietnamese-guide.md)
+
+Sau đó quay lại file này để xem cách dùng cụ thể trong app và backtester.
+
 ## Who This Guide Is For
 
 Use this guide when you want to:
@@ -15,7 +23,6 @@ Use this guide when you want to:
 - compare `bias_mode` and `regime_mode` on backtests
 - use the engine as a manual-trading reference instead of a black box
 - understand which knobs matter vs which knobs are mostly geometry/sensitivity
-
 ## Main Surfaces
 
 ### 1. Streamlit app

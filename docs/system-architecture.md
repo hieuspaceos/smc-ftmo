@@ -20,12 +20,18 @@ added regime-aware breaker switching in the backtester and UI.
 
 The engine is documented as a separate doc set:
 
+### Đọc nhanh bằng tiếng Việt
+
+- [SMC Engine Giải Thích Bằng Tiếng Việt](./smc-engine-vietnamese-guide.md)
+- [SMC Engine Usage Guide](./smc-engine-usage-guide.md)
+
+### Tài liệu kỹ thuật chi tiết
+
 - [SMC Engine Overview](./smc-engine-overview.md)
 - [SMC Engine Event Pipeline](./smc-engine-event-pipeline.md)
 - [SMC Engine Module Reference](./smc-engine-module-reference.md)
 - [SMC Engine Extensions](./smc-engine-extensions.md)
 - [SMC Engine Verification](./smc-engine-verification.md)
-- [SMC Engine Usage Guide](./smc-engine-usage-guide.md)
 
 ## Core Engine Modules
 
