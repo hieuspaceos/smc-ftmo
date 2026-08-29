@@ -14,14 +14,14 @@ displayMode  = input.string("Recent", "Display mode", options=["Recent", "All"],
 
 swingWindow        = input.int(5, "Swing left/right", minval=1, group=groupCore)
 atrPeriod          = input.int(14, "ATR period", minval=1, group=groupCore)
-displacementMult   = input.float(1.5, "Displacement ATR", minval=0.1, step=0.05, group=groupCore)
+displacementMult   = input.float(2.5, "Displacement ATR", minval=0.1, step=0.05, group=groupCore)
 structureBufferAtr = input.float(0.0, "Structure close buffer ATR", minval=0.0, step=0.05, group=groupCore)
 sweepBufferAtr     = input.float(0.05, "Sweep wick buffer ATR", minval=0.0, step=0.01, group=groupCore)
 obLookback         = input.int(20, "OB lookback", minval=1, group=groupCore)
 obExpiryBars       = input.int(200, "OB expiry bars", minval=1, group=groupCore)
-obCapPerSide       = input.int(128, "OB cap per side", minval=1, maxval=256, group=groupCore)
+obCapPerSide       = input.int(64, "OB cap per side", minval=1, maxval=256, group=groupCore)
 fvgExpiryBars      = input.int(200, "FVG expiry bars", minval=1, group=groupCore)
-fvgCapPerSide      = input.int(128, "FVG cap per side", minval=1, maxval=256, group=groupCore)
+fvgCapPerSide      = input.int(64, "FVG cap per side", minval=1, maxval=256, group=groupCore)
 poolToleranceAtr   = input.float(0.15, "Pool tolerance ATR", minval=0.01, step=0.01, group=groupCore)
 poolMinMembers     = input.int(2, "Pool min members", minval=2, maxval=8, group=groupCore)
 
@@ -33,7 +33,7 @@ showOrderBlocks    = input.bool(true,  "Show order blocks", group=groupDisplay)
 showFvgs           = input.bool(false, "Show FVGs", group=groupDisplay)
 showContext        = input.bool(true,  "Show context table", group=groupDisplay)
 showPools          = input.bool(false, "Show liquidity pools", group=groupDisplay)
-recentLabelBudget  = input.int(60, "Recent label budget", minval=10, maxval=300, group=groupDisplay)
+recentLabelBudget  = input.int(120, "Recent label budget", minval=10, maxval=500, group=groupDisplay)
 recentBoxBudget    = input.int(40, "Recent box budget", minval=10, maxval=200, group=groupDisplay)
 
 displayPreset            = input.string("Decision", "Display preset", options=["Decision", "Context", "Debug", "Custom"], group=groupRulebook)
@@ -53,13 +53,14 @@ manualPosOk       = input.bool(false, "No open position", group=groupRulebook)
 manualSpreadOk    = input.bool(false, "Spread/news clean", group=groupRulebook)
 manualJudgmentOk  = input.bool(false, "Trader judgment clear", group=groupRulebook)
 
+customShowStructure     = input.bool(true,  "Custom: BOS / CHoCH", group=groupDisplay)
+customShowOrderBlocks   = input.bool(true,  "Custom: order blocks", group=groupDisplay)
 customShowSwings       = input.bool(false, "Custom: swings", group=groupDisplay)
 customShowDisplacement = input.bool(false, "Custom: displacement", group=groupDisplay)
 customShowSweeps       = input.bool(false, "Custom: sweeps", group=groupDisplay)
 customShowFvgs         = input.bool(false, "Custom: FVGs", group=groupDisplay)
 customShowPools        = input.bool(false, "Custom: pools", group=groupDisplay)
 customShowDebugRows    = input.bool(false, "Custom: debug rows", group=groupDisplay)
-
 //==============================================================================
 // Display preset precedence
 //==============================================================================
@@ -85,15 +86,18 @@ presetShowFvgs         = (presetContext or presetDebug) or (presetCustom and cus
 presetShowPools        = (presetContext or presetDebug) or (presetCustom and customShowPools)
 presetShowDebugRows    = presetDebug or (presetCustom and customShowDebugRows)
 
-labelBudget = displayMode == "Recent" ? recentLabelBudget : math.min(recentLabelBudget * 3, 300)
+labelBudget = displayMode == "Recent" ? recentLabelBudget : math.min(recentLabelBudget * 3, 500)
 boxBudget   = displayMode == "Recent" ? recentBoxBudget : math.min(recentBoxBudget * 3, 200)
 
-showStructureEffective   = (presetDecision or presetContext or presetDebug) and showStructure
-showOrderBlocksEffective = (presetDecision or presetContext or presetDebug) and showOrderBlocks
-showSwingsEffective      = presetShowSwings and effectiveShowSwings
-showSweepsEffective      = presetShowSweeps or (presetCustom and customShowSweeps)
-showFvgsEffective        = presetShowFvgs or (presetCustom and customShowFvgs)
-showPoolsEffective       = presetShowPools and effectiveShowPools
+// When Debug preset is chosen, force-enable all audit overlays regardless of input toggle
+// When Custom preset is chosen, individual customShowX flags control visibility
+showStructureEffective   = (presetDecision or presetContext or presetDebug or (presetCustom and customShowStructure)) and showStructure
+showOrderBlocksEffective = (presetDecision or presetContext or presetDebug or (presetCustom and customShowOrderBlocks)) and showOrderBlocks
+showSwingsEffective      = (presetDecision or presetContext or presetDebug or (presetCustom and customShowSwings)) and (showSwings or presetDebug)
+showSweepsEffective      = (presetDecision or presetContext or presetDebug or (presetCustom and customShowSweeps)) and showSweeps
+showFvgsEffective        = (presetDecision or presetContext or presetDebug or (presetCustom and customShowFvgs)) and showFvgs
+showPoolsEffective       = (presetDecision or presetContext or presetDebug or (presetCustom and customShowPools)) and showPools
+
 
 //==============================================================================
 // Data structures
@@ -213,7 +217,9 @@ rangeAtr           = atr > 0 ? candleRange / atr : na
 bodyAtr            = atr > 0 ? bodyRange / atr : na
 bodyRatio          = candleRange > 0 ? bodyRange / candleRange : na
 closeLocation      = candleRange > 0 ? (close - low) / candleRange : na
-expansionQualified = not na(atr) and candleRange > displacementMult * atr
+// Adaptive threshold: M15 and lower need higher mult (more noise), H1+ keeps lower mult
+float adaptiveDisplacementMult = timeframe.in_seconds() <= 900 ? displacementMult : timeframe.in_seconds() <= 3600 ? displacementMult - 0.5 : displacementMult - 0.75
+expansionQualified = not na(atr) and candleRange > adaptiveDisplacementMult * atr
 expansionDirection = close > open ? 1 : close < open ? -1 : 0
 
 //==============================================================================
@@ -419,10 +425,8 @@ if barstate.isconfirmed
 
     if invariantOk and upperBreak and lowerBreak
         lastDiagnostic := "dual_break@" + str.tostring(bar_index)
-        log.warning("SMC dual_break @ " + str.tostring(bar_index) + " trend=" + str.tostring(structureTrend))
         upperBreak := false
         lowerBreak := false
-
     int   structureEventDirection = 0
     string structureEventText     = ""
     float structureSourceLevel    = float(na)
@@ -437,15 +441,16 @@ if barstate.isconfirmed
             bosSignal := 1
             structureEventText := "BOS↑"
         structureTrend := 1
+        nextStructureId += 1
         if priorTrend == -1
             lastBullChoChId := nextStructureId
         else
             lastBullBosId := nextStructureId
-        nextStructureId += 1
         brokenSource = array.get(swingHighs, activeStructureHighIdx)
         brokenSource.consumed := true
         array.set(swingHighs, activeStructureHighIdx, brokenSource)
         structureSourceLevel := brokenSource.level
+        log.info("SMC " + structureEventText + " @ " + str.tostring(bar_index) + " level=" + str.tostring(structureSourceLevel, format.mintick) + " id=" + str.tostring(nextStructureId))
     else if lowerBreak
         int priorTrend = structureTrend
         structureEventDirection := -1
@@ -456,15 +461,16 @@ if barstate.isconfirmed
             bosSignal := -1
             structureEventText := "BOS↓"
         structureTrend := -1
+        nextStructureId += 1
         if priorTrend == 1
             lastBearChoChId := nextStructureId
         else
             lastBearBosId := nextStructureId
-        nextStructureId += 1
         brokenSource = array.get(swingLows, activeStructureLowIdx)
         brokenSource.consumed := true
         array.set(swingLows, activeStructureLowIdx, brokenSource)
         structureSourceLevel := brokenSource.level
+        log.info("SMC " + structureEventText + " @ " + str.tostring(bar_index) + " level=" + str.tostring(structureSourceLevel, format.mintick) + " id=" + str.tostring(nextStructureId))
 
     if structureEventDirection != 0
         brokenLevel := structureSourceLevel
@@ -505,11 +511,11 @@ if barstate.isconfirmed
         lowSweepRef = array.get(sweepLows, activeSweepLowIdx)
         lowSweepRef.consumed := true
         array.set(sweepLows, activeSweepLowIdx, lowSweepRef)
-        lastSweepText := "bullish sweep @ " + str.tostring(lowSweepRef.level, format.mintick)
         if sweepBullClean
             lastCleanSweepBar   := bar_index
             lastCleanSweepDir   := 1
             lastCleanSweepLevel := lowSweepRef.level
+            log.info("SMC clean_sweep @ " + str.tostring(bar_index) + " side=bull level=" + str.tostring(lowSweepRef.level, format.mintick))
         if showSweepsEffective
             sweepLabel = f_make_sweep_label(1)
             f_track_label(labelQueue, sweepLabel, labelBudget)
@@ -522,10 +528,10 @@ if barstate.isconfirmed
             lastCleanSweepBar   := bar_index
             lastCleanSweepDir   := -1
             lastCleanSweepLevel := highSweepRef.level
+            log.info("SMC clean_sweep @ " + str.tostring(bar_index) + " side=bear level=" + str.tostring(highSweepRef.level, format.mintick))
         if showSweepsEffective
             sweepLabel = f_make_sweep_label(-1)
             f_track_label(labelQueue, sweepLabel, labelBudget)
-
 //==============================================================================
 // Session filter (compute once per bar before pipeline)
 //==============================================================================
@@ -618,10 +624,8 @@ if barstate.isconfirmed and bosSignal != 0
                 OrderBlockZone newZone = OrderBlockZone.new(nextObId, direction, originBar, bar_index, zoneTop, zoneBottom, bar_index, false, false, na, na, na, drawBox, lastBearBosId)
                 array.push(bearishObs, newZone)
             lastObText := (direction == 1 ? "bullish" : "bearish") + " OB @ " + str.tostring(zoneBottom, format.mintick) + " - " + str.tostring(zoneTop, format.mintick)
-            nextObId += 1
-    else
+            log.info("SMC ob_activated @ " + str.tostring(bar_index) + " id=" + str.tostring(nextObId) + " dir=" + (direction == 1 ? "bull" : "bear") + " zone=[" + str.tostring(zoneBottom, format.mintick) + "," + str.tostring(zoneTop, format.mintick) + "]")
         lastDiagnostic := "skip_ob_no_expansion@" + str.tostring(bar_index)
-        log.warning("SMC skip_ob_no_expansion @ " + str.tostring(bar_index) + " range_atr=" + str.tostring(rangeAtr))
 
 //==============================================================================
 // Three-candle FVG detection
@@ -722,8 +726,7 @@ if barstate.isconfirmed
                     box.set_right(draft.poolBox, bar_index)
                     box.set_bgcolor(draft.poolBox, f_pool_box_color(1, true))
                     box.set_border_color(draft.poolBox, f_pool_border_color(1, true))
-                lastPoolText := "EQH swept @ " + str.tostring(draft.levelMean, format.mintick)
-                array.set(highPools, p, draft)
+                    log.info("SMC pool_swept @ " + str.tostring(bar_index) + " side=high level=" + str.tostring(draft.levelMean, format.mintick))
     int lowCount = array.size(lowPools)
     if lowCount > 0
         for p = 0 to lowCount - 1
@@ -736,8 +739,7 @@ if barstate.isconfirmed
                     box.set_right(draft.poolBox, bar_index)
                     box.set_bgcolor(draft.poolBox, f_pool_box_color(-1, true))
                     box.set_border_color(draft.poolBox, f_pool_border_color(-1, true))
-                lastPoolText := "EQL swept @ " + str.tostring(draft.levelMean, format.mintick)
-                array.set(lowPools, p, draft)
+                    log.info("SMC pool_swept @ " + str.tostring(bar_index) + " side=low level=" + str.tostring(draft.levelMean, format.mintick))
 
 //==============================================================================
 // HTF confirmed-bar requests
@@ -1062,11 +1064,12 @@ if barstate.isconfirmed and not na(atr) and atr > 0
         float target     = bestObDir == 1 ? entry + rulebookMinRR * slDistance : entry - rulebookMinRR * slDistance
         if manualGatesAllOk
             rulebookState := "chart-qualified"
+            log.info("SMC chart_qualified @ " + str.tostring(bar_index) + " ob_id=" + str.tostring(bestObId) + " dir=" + str.tostring(bestObDir) + " score=" + str.tostring(bestScore))
         else if manualGatesUnknown
             rulebookState := "watch"
         else
             rulebookState := "blocked"
-        rulebookRejection    := bestReason
+            log.info("SMC blocked @ " + str.tostring(bar_index) + " ob_id=" + str.tostring(bestObId) + " reason=" + bestReason)
         rulebookScore        := bestScore
         rulebookObId         := bestObId
         rulebookObDir        := bestObDir
@@ -1089,19 +1092,18 @@ if barstate.isconfirmed and not na(atr) and atr > 0
         rulebookTarget       := float(na)
         rulebookScore        := 0.0
         rulebookRejection    := "no-qualifying-ob"
-        log.warning("SMC rulebook_reject @ " + str.tostring(bar_index) + " reason=" + bestReason + " bias=" + str.tostring(structureTrend))
+
         if manualGatesAllOk
             rulebookState := "no-signal"
         else if manualGatesUnknown
             rulebookState := "watch"
         else
             rulebookState := "blocked"
-
 //==============================================================================
 // Minimal plots and audit outputs
 //==============================================================================
-plot(showDisplacement ? rangeAtr : na, "Range ATR", color=color.new(color.yellow, 0))
-plot(showDisplacement ? bodyAtr  : na, "Body ATR",  color=color.new(color.blue, 0))
+// Range/body ATR plots removed - they distort Y-axis (ATR ~0.001 vs price ~1.16)
+// Displacement marker "D" alone is sufficient visual feedback
 plot(showSwingsEffective and not na(equilibrium) ? equilibrium : na, "Equilibrium", color=color.new(color.gray, 60), linewidth=1, style=plot.style_linebr)
 plot(showSwingsEffective ? displaySwingHigh : na, "Last swing high", color=color.new(color.orange, 70), linewidth=1, style=plot.style_linebr)
 plot(showSwingsEffective ? displaySwingLow  : na, "Last swing low",  color=color.new(color.aqua, 70), linewidth=1, style=plot.style_linebr)
@@ -1109,7 +1111,7 @@ plotshape(showStructureEffective and bosSignal == 1,  "Bull BOS",  shape.triangl
 plotshape(showStructureEffective and bosSignal == -1, "Bear BOS",  shape.triangledown, location.belowbar, color=color.red,  size=size.tiny, text="BOS")
 plotshape(showStructureEffective and chochSignal == 1,  "Bull CHoCH", shape.circle, location.abovebar, color=color.new(color.lime, 0), size=size.tiny, text="C")
 plotshape(showStructureEffective and chochSignal == -1, "Bear CHoCH", shape.circle, location.belowbar, color=color.new(color.red, 0), size=size.tiny, text="C")
-plotchar(showDisplacement and expansionQualified ? rangeAtr : na, "Qualified displacement", "D", location.top, color=color.new(color.yellow, 0))
+plotchar(showDisplacement and expansionQualified ? high : na, "Qualified displacement", "D", location.abovebar, color=color.new(color.yellow, 0), size=size.tiny)
 
 //==============================================================================
 // Context table
