@@ -536,9 +536,9 @@ with st.sidebar:
         ["strict (D+H4)", "h4_only", "any"],
         index=0,
         help=(
-            "strict = D+H4 cùng chiều (Rule 1 truyền thống). "
-            "h4_only = theo H4 khi D neutral; chặn counter-trend. "
-            "any = trade theo bất kỳ TF nào (nới lỏng)."
+            "strict = D+H4 cùng chiều, mode nên dùng khi học. "
+            "h4_only = H4 dẫn hướng, D neutral vẫn cho phép. "
+            "any = nới lỏng để nghiên cứu, không phải setup mặc định."
         ),
     )
     # Auto regime is structure-aware: recent BOS/CHoCH/sweep densities decide
@@ -548,15 +548,14 @@ with st.sidebar:
         ["off", "on", "auto"],
         index=0,
         help=(
-            "off = baseline OB-classic only. on = always layer breaker "
-            "zones. auto = use recent BOS/CHoCH/sweep structure to decide "
-            "whether breakers should participate."
+            "off = chỉ dùng OB classic. on = luôn cho breaker tham gia. "
+            "auto = dùng BOS/CHoCH/sweep + EQH/EQL để quyết định breaker."
         ),
     )
     promotion_lookback = st.slider(
         "Breaker promotion lookback",
         10, 200, 50, 5,
-        help="Max bars between OB origin and CHoCH for breaker promotion.",
+        help="Max bars between OB invalidation and CHoCH for breaker promotion.",
     )
     # Filters removed: sweep_clean, in_PD_zone, first_test are redundant or
     # anti-edge on EURUSD M15 (verified empirically). Confluence score and
@@ -697,7 +696,7 @@ with st.expander("Chart view filters", expanded=True):
         pool_cap = st.slider(
             "EQH/EQL pools visible",
             min_value=0, max_value=80, step=4, value=8,
-            help="0 = hide pools, 80 = show all. Use a small value when many bars are visible.",
+            help="Liquidity context only. 0 hides pools; higher values show more EQH/EQL levels.",
         )
     with slider_cols[1]:
         chart_view_limit = st.number_input(
@@ -705,7 +704,7 @@ with st.expander("Chart view filters", expanded=True):
             min_value=150, max_value=8000, step=50,
             value=int(st.session_state.get("chart_max_bars", _CHART_MAX_BARS_DEFAULT)),
             key="chart_max_bars_input",
-            help="Lower = zoom in. Higher = see more bars but smaller candles. Max 8000 = ~3 months of M15 data.",
+            help="Lower = tighter manual review. Higher = more history but smaller candles.",
         )
 CHART_MAX_BARS = int(chart_view_limit)
 if len(main_df_view) > CHART_MAX_BARS:
@@ -759,37 +758,51 @@ OVERLAY_COLORS = {
     "premium_discount_discount": "rgba(0,200,0,0.85)",
     "premium_discount_premium": "rgba(200,0,0,0.85)",
 }
+# Ẩn hết các checkbox có key bắt đầu bằng "ov_", chỉ giữ label
+st.markdown(
+    "<style>"
+    "div[data-testid='stCheckbox']:has(input[id^='ov_']) > div:first-child {display: none;}"
+    "div[data-testid='stCheckbox']:has(input[id^='ov_']) > div {margin-left: 0;}"
+    "div[data-testid='stCheckbox']:has(input[id^='ov_']) label {color: inherit; font-size: 14px;}"
+    "</style>",
+    unsafe_allow_html=True,
+)
 overlay_cols = st.columns(5)
-def _swatch(color: str) -> str:
-    return f"<span style='display:inline-block;width:0.8em;height:0.8em;background:{color};border:1px solid #444;margin-right:0.4em;vertical-align:middle;'></span>"
-with overlay_cols[0]:
-    st.markdown(_swatch("#222") + "**Candles**", unsafe_allow_html=True)
-    overlay_flags["candles"] = st.checkbox("show", True, key="ov_candles", label_visibility="collapsed")
-    st.markdown(_swatch(OVERLAY_COLORS["fvg"]) + "**FVG**", unsafe_allow_html=True)
-    overlay_flags["fvg"] = st.checkbox("show", True, key="ov_fvg", label_visibility="collapsed")
-with overlay_cols[1]:
-    st.markdown(_swatch(OVERLAY_COLORS["ob"]) + "**OB**", unsafe_allow_html=True)
-    overlay_flags["ob"] = st.checkbox("show", True, key="ov_ob", label_visibility="collapsed")
-    st.markdown(_swatch(OVERLAY_COLORS["bos_up"]) + "**BOS**", unsafe_allow_html=True)
-    overlay_flags["bos"] = st.checkbox("show", True, key="ov_bos", label_visibility="collapsed")
-with overlay_cols[2]:
-    st.markdown(_swatch(OVERLAY_COLORS["choch_up"]) + "**CHoCH**", unsafe_allow_html=True)
-    overlay_flags["choch"] = st.checkbox("show", True, key="ov_choch", label_visibility="collapsed")
-    st.markdown(_swatch(OVERLAY_COLORS["sweep_up"]) + "**Sweep**", unsafe_allow_html=True)
-    overlay_flags["sweep"] = st.checkbox("show", True, key="ov_sweep", label_visibility="collapsed")
-with overlay_cols[3]:
-    st.markdown(_swatch(OVERLAY_COLORS["displacement"]) + "**Displacement**", unsafe_allow_html=True)
-    overlay_flags["displacement"] = st.checkbox("show", True, key="ov_disp", label_visibility="collapsed")
-    st.markdown(_swatch(OVERLAY_COLORS["eqh_pool_swept"]) + "**EQH swept**", unsafe_allow_html=True)
-    overlay_flags["eqh_pool_swept"] = st.checkbox("show", True, key="ov_eqh", label_visibility="collapsed")
-with overlay_cols[4]:
-    st.markdown(_swatch(OVERLAY_COLORS["eql_pool_swept"]) + "**EQL swept**", unsafe_allow_html=True)
-    overlay_flags["eql_pool_swept"] = st.checkbox("show", True, key="ov_eql", label_visibility="collapsed")
-    st.markdown(_swatch(OVERLAY_COLORS["premium_discount_premium"]) + "**P/D zones**", unsafe_allow_html=True)
-    overlay_flags["premium_discount"] = st.checkbox("show", True, key="ov_pd", label_visibility="collapsed")
+# Render each overlay as a compact checkbox row.
+EMOJIS = {
+    "candles": "⬛",
+    "ob": "🟦",
+    "fvg": "🟨",
+    "bos": "🟩",
+    "choch": "🟢",
+    "sweep": "🟦",
+    "displacement": "🟫",
+    "eqh_pool_swept": "🟩",
+    "eql_pool_swept": "🟪",
+    "premium_discount": "🟥",
+}
+OVERLAY_LAYOUT = [
+    [("candles", "Candles"), ("fvg", "FVG")],
+    [("ob", "OB"), ("bos", "BOS")],
+    [("choch", "CHoCH"), ("sweep", "Sweep")],
+    [("displacement", "Displacement"), ("eqh_pool_swept", "EQH swept")],
+    [("eql_pool_swept", "EQL swept"), ("premium_discount", "P/D zones")],
+]
+for col, items in zip(overlay_cols, OVERLAY_LAYOUT):
+    with col:
+        for key, label in items:
+            emoji = EMOJIS[key]
+            checked = st.session_state.get(f"ov_{key}", True)
+            state = st.checkbox(
+                f"{emoji}  {label}",
+                value=checked,
+                key=f"ov_{key}",
+            )
+            overlay_flags[key] = state
 all_cols = st.columns([6, 1, 1])
 with all_cols[0]:
     st.caption(f"Overlays: {sum(1 for v in overlay_flags.values() if v)} of {len(overlay_flags)} enabled")
+    st.caption("Manual checklist: docs/smc-manual-trade-checklist.md")
 with all_cols[1]:
     if st.button("All on", key="ov_all_on", use_container_width=True):
         for k in overlay_flags:
@@ -939,11 +952,8 @@ else:
 
 # -------------------- FOOTER --------------------
 st.caption(
-    "Rules — Required: 1) Bias mode (strict/h4_only/any) · 2) BOS/CHoCH on M15 · "
-    "3) Displacement · 4) OB unmitigated (auto first-test) · "
-    "5) Confluence ≥ min_score · 6) SL = OB edge ± ATR buffer · "
-    "7) Partial TP per profile, BE on TP1 · "
-    "8) Regime mode (off/on/auto, Plan 14) — breaker overlay when on/auto · "
-    "9) Risk 0.55%/trade, max 3/day, -2R daily stop, FTMO 5%/10% guard · "
-    "10) Journal every trade."
+    "Rules — 1) D/H4 first 2) M15 BOS/CHoCH 3) Displacement 4) OB first-touch only "
+    "5) Confluence ≥ min_score 6) SL beyond OB with ATR buffer 7) TP profile + BE "
+    "8) Regime off for baseline, on/auto for breaker research 9) EQH/EQL are liquidity "
+    "context, not entry signals 10) Journal every trade."
 )

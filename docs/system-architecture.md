@@ -14,11 +14,10 @@ The project has two architectural layers:
    `app.py`
 
 Phase 12 replaced the third-party `smartmoneyconcepts` library with a custom
-causal engine. Phase 13 added non-invasive breaker/body extensions. Phase 14
-added regime-aware breaker switching in the backtester and UI. The signal-quality
-refinement upgraded `regime.py` to structure-aware Regime V2, then added
-`liquidity_pools.py` so EQH/EQL density can enrich auto-regime selection
-without widening the user config surface.
+causal engine. Phase 13 added non-invasive breaker/body extensions. The
+signal-quality refinement upgraded `regime.py` to structure-aware Regime V2,
+then added `liquidity_pools.py` so EQH/EQL density can enrich auto-regime
+selection without widening the user config surface.
 
 ## Split Engine Docs
 

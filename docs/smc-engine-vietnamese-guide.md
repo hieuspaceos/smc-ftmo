@@ -22,6 +22,7 @@ Nếu đọc docs tiếng Anh thấy nặng, hãy đọc file này trước, r�
 - [SMC Engine Overview](./smc-engine-overview.md)
 - [SMC Engine Event Pipeline](./smc-engine-event-pipeline.md)
 - [SMC Engine Verification](./smc-engine-verification.md)
+- [Checklist Trade Tay SMC](./smc-manual-trade-checklist.md)
 
 ## Cách hiểu ngắn nhất
 
@@ -240,6 +241,120 @@ Nên thêm:
 - `auto` = engine tự đo regime rồi quyết định
 
 Nhưng hiện tại `auto` vẫn là heuristic, chưa nên tin tuyệt đối.
+
+## Quy trình manual trade nên làm thế nào?
+
+Đây là cách dùng app để tập ra quyết định tay, không phải để “đoán”.
+
+Nếu muốn bản cực ngắn để mở chart làm ngay, đọc luôn:
+
+- [Checklist Trade Tay SMC](./smc-manual-trade-checklist.md)
+
+### Setup khuyến nghị để học
+
+- `bias_mode = strict (D+H4)` hoặc `h4_only`
+- `regime_mode = off`
+- `promotion_lookback_bars = 50`
+- `TP profile = Conservative`
+- giữ `displacement ATR`, `sweep buffer`, `pd_lookback` ở mức mặc định trước
+
+Lý do:
+
+- `strict` giúp lọc hướng vào lệnh rõ hơn
+- `regime_mode=off` giữ baseline OB classic ổn định
+- manual trade nên học cấu trúc trước, không học quá nhiều knob cùng lúc
+
+### Checklist khi mở chart
+
+1. Chọn pair và timeframe chính.
+2. Đọc bias D, H4, H1 trước khi nhìn M15.
+3. Xác định thị trường đang nghiêng `bull`, `bear`, hay `neutral`.
+4. Trên M15, tìm swing gần nhất rồi xem có BOS hay CHoCH thật không.
+5. Chỉ quan sát OB sinh ra sau BOS hợp lệ.
+6. Kiểm tra sweep và FVG như lớp xác nhận, không phải lý do duy nhất để vào.
+7. Xem giá đang ở `premium` hay `discount`.
+8. Chỉ chờ first touch nếu zone còn active.
+9. Không vào nếu signal chỉ đẹp trên 1 bar nhưng trái với HTF bias.
+
+### Cách đọc một setup long
+
+Setup long thường hợp lý hơn khi:
+
+- D và H4 không bearish ngược hoàn toàn
+- cấu trúc M15 vừa có BOS bullish hoặc CHoCH bullish rõ
+- giá pullback về OB hoặc discount zone
+- có sweep downside hoặc displacement xác nhận trước đó
+- entry nằm trên first-touch bar hoặc bar ngay sau khi zone vẫn active
+
+### Liquidity pools dùng thế nào?
+
+EQH / EQL pools là vùng thanh khoản, không phải tín hiệu vào lệnh độc lập.
+
+Trong app hiện tại:
+
+- chúng có overlay riêng trên chart
+- chúng được dùng để giải thích regime `auto`
+- chúng giúp nhìn rõ chỗ giá có thể quét thanh khoản trước khi đi tiếp
+
+Khi trade tay:
+
+- dùng EQH/EQL như bản đồ liquidity
+- ưu tiên khi chúng nằm gần vùng OB / sweep / structure hợp lệ
+- không vào chỉ vì có pool
+
+### Cách đọc một setup short
+
+Setup short thường hợp lý hơn khi:
+
+- D và H4 không bullish ngược hoàn toàn
+- cấu trúc M15 vừa có BOS bearish hoặc CHoCH bearish rõ
+- giá hồi lên OB hoặc premium zone
+- có sweep upside hoặc displacement xác nhận trước đó
+- không vào khi zone đã bị invalidated
+
+### Breaker dùng thế nào?
+
+Breaker chỉ nên xem là lớp nghiên cứu / lớp xác nhận mở rộng.
+
+Khuyến nghị:
+
+- học baseline `OB classic` trước
+- bật breaker khi muốn so sánh thêm
+- dùng `regime_mode=on` để ép breaker, hoặc `auto` để engine tự quyết
+
+Khi trade tay:
+
+- breaker đáng xem nhất khi OB cũ đã invalidated rồi và CHoCH mới xuất hiện sau đó
+- đừng coi breaker là tốt hơn OB mặc định trên mọi dataset
+- nếu `regime_mode=off`, manual workflow nên bỏ qua breaker để giữ nhất quán
+
+### Điều nên tránh khi luyện tay
+
+- đổi nhiều slider cùng lúc rồi kết luận từ một trade
+- dùng `auto` như một nút thần kỳ
+- vào lệnh chỉ vì OB đẹp mà bỏ qua HTF bias
+- quên kiểm tra zone còn active hay đã hết hạn
+- lấy FVG hoặc sweep riêng lẻ làm đủ điều kiện vào lệnh
+- coi EQH/EQL pool như entry trigger độc lập
+- bật breaker rồi mặc định tin nó hơn OB classic
+
+### Cách ghi journal khi thực hành
+
+Mỗi trade nên ghi tối thiểu:
+
+- pair, timeframe, session
+- D / H4 / H1 / M15 bias
+- BOS hay CHoCH nào là trigger
+- OB / breaker / FVG / sweep nào đã dùng
+- entry lý do, stop lý do, target lý do
+- trade này đúng hay sai theo checklist
+
+Nếu làm vậy đều, journal sẽ cho biết bạn đang sai ở đâu:
+
+- sai bias
+- sai timing
+- sai zone
+- hay chỉ là quản trị rủi ro kém
 
 ## Tôi nên đọc bộ docs theo thứ tự nào?
 

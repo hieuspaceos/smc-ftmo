@@ -42,6 +42,7 @@ The app exposes:
 - backtest metrics
 - filterable journal
 - strategy controls for TP profile, bias mode, regime mode, and breaker lookback
+- compact overlay toggles with `All on` / `All off` shortcuts
 
 ![SMC engine UI overview](../assets/images/smc-engine-overview-ui.webp)
 
