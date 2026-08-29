@@ -423,7 +423,7 @@ def build_main_chart(
 
     fig.update_layout(
         title=f"{pair} {timeframe} — SMC overlays",
-        xaxis_rangeslider_visible=False, height=1000,
+        xaxis_rangeslider_visible=True, height=900,
         autosize=True,
         legend=dict(
             orientation="h",
@@ -653,7 +653,44 @@ with st.expander("Chart tips & shortcuts (Plotly)", expanded=False):
     )
 _CHART_MAX_BARS_DEFAULT = 400
 main_df = data[timeframe]
-if start_date and end_date:
+nav_offset = int(st.session_state.get("nav_offset_days", 0))
+if nav_offset > 0:
+    end_ts = main_df.index.max()
+    start_ts = end_ts - pd.Timedelta(days=nav_offset)
+    main_df_view = main_df[main_df.index >= start_ts]
+elif start_date and end_date:
+    try:
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
+        main_df_view = main_df[(main_df.index >= start_ts) & (main_df.index < end_ts)]
+    except Exception:
+        main_df_view = main_df.tail(500)
+else:
+    main_df_view = main_df.tail(500)
+st.caption("Quick navigation")
+nav_cols = st.columns(5)
+if nav_cols[0].button("Last 2 days", key="nav_2d"):
+    st.session_state["nav_offset_days"] = 2
+    st.rerun()
+if nav_cols[1].button("Last 5 days", key="nav_5d"):
+    st.session_state["nav_offset_days"] = 5
+    st.rerun()
+if nav_cols[2].button("Last 2 weeks", key="nav_14d"):
+    st.session_state["nav_offset_days"] = 14
+    st.rerun()
+if nav_cols[3].button("Last month", key="nav_30d"):
+    st.session_state["nav_offset_days"] = 30
+    st.rerun()
+if nav_cols[4].button("Full range", key="nav_full"):
+    st.session_state["nav_offset_days"] = 0
+    st.rerun()
+main_df = data[timeframe]
+nav_offset = int(st.session_state.get("nav_offset_days", 0))
+if nav_offset > 0:
+    end_ts = main_df.index.max()
+    start_ts = end_ts - pd.Timedelta(days=nav_offset)
+    main_df_view = main_df[main_df.index >= start_ts]
+elif start_date and end_date:
     try:
         start_ts = pd.Timestamp(start_date)
         end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
