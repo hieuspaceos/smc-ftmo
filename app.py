@@ -424,15 +424,10 @@ def build_main_chart(
         # trading day with no weekend data. Skip those gaps so the chart
         # reads as a continuous weekday sequence.
         xaxis=dict(rangebreaks=[dict(bounds=["sat", "mon"])]),
-        legend=dict(
-            orientation="h",
-            bordercolor="rgba(0,0,0,0.1)",
-            borderwidth=1,
-            itemclick="toggle",
-            itemdoubleclick="toggleothers",
-            groupclick="toggleitem",
-            tracegroupgap=4,
-        ),
+        # Overlay toggling is done via the checkbox row above the chart
+        # (Streamlit's plotly_chart wrapper does not always propagate
+        # Plotly's legend click events).
+        showlegend=False,
         margin=dict(l=60, r=40, t=80, b=60),
         hovermode="closest",
         modebar=dict(
@@ -443,7 +438,6 @@ def build_main_chart(
             add=["zoom2d", "pan2d", "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"],
         ),
     )
-    fig.update_xaxes(fixedrange=False)
     fig.update_yaxes(fixedrange=False)
     if not df.empty:
         fig.update_xaxes(range=[df.index[0], df.index[-1]])
@@ -749,10 +743,9 @@ overlay_flags = {
     "eql_pool_swept": True,
     "premium_discount": True,
 }
-overlay_cols = st.columns(6)
+overlay_cols = st.columns(5)
 with overlay_cols[0]:
     overlay_flags["candles"] = st.checkbox("Candles", True, key="ov_candles")
-    overlay_flags["fvg"] = st.checkbox("FVG", True, key="ov_fvg")
 with overlay_cols[1]:
     overlay_flags["ob"] = st.checkbox("OB", True, key="ov_ob")
     overlay_flags["bos"] = st.checkbox("BOS", True, key="ov_bos")
@@ -765,11 +758,15 @@ with overlay_cols[3]:
 with overlay_cols[4]:
     overlay_flags["eql_pool_swept"] = st.checkbox("EQL swept", True, key="ov_eql")
     overlay_flags["premium_discount"] = st.checkbox("P/D zones", True, key="ov_pd")
-with overlay_cols[5]:
+all_cols = st.columns([6, 1, 1])
+with all_cols[0]:
+    st.caption(f"Overlays: {sum(1 for v in overlay_flags.values() if v)} of {len(overlay_flags)} enabled")
+with all_cols[1]:
     if st.button("All on", key="ov_all_on", use_container_width=True):
         for k in overlay_flags:
             st.session_state[f"ov_{k}"] = True
         st.rerun()
+with all_cols[2]:
     if st.button("All off", key="ov_all_off", use_container_width=True):
         for k in overlay_flags:
             st.session_state[f"ov_{k}"] = False
