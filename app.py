@@ -695,7 +695,7 @@ with nav_col2:
         st.rerun()
     if nav_cols[4].button("Full", key="nav_full", use_container_width=True):
         st.session_state["nav_offset_days"] = 0
-        st.session_state["chart_max_bars"] = 1500
+        st.session_state["chart_max_bars"] = 6000
         st.rerun()
 col_pool, col_bars = st.columns(2)
 with col_pool:
@@ -707,10 +707,10 @@ with col_pool:
 with col_bars:
     chart_view_limit = st.number_input(
         "Visible bars per slice",
-        min_value=150, max_value=3000, step=50,
+        min_value=150, max_value=8000, step=50,
         value=int(st.session_state.get("chart_max_bars", _CHART_MAX_BARS_DEFAULT)),
         key="chart_max_bars_input",
-        help="Lower = zoom in. Higher = see more bars but smaller candles.",
+        help="Lower = zoom in. Higher = see more bars but smaller candles. Max 8000 = ~3 months of M15 data.",
     )
 st.session_state["chart_max_bars"] = int(chart_view_limit)
 CHART_MAX_BARS = int(chart_view_limit)
