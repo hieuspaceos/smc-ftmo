@@ -650,8 +650,8 @@ main_df = data[timeframe]
 available_months = sorted({ts.strftime("%Y-%m") for ts in main_df.index})
 if "selected_months" not in st.session_state:
     st.session_state["selected_months"] = list(available_months[-3:]) if available_months else []
-with st.expander("Chart view filters", expanded=False):
-    filter_cols = st.columns([8, 1])
+with st.expander("Chart view filters", expanded=True):
+    filter_cols = st.columns([4, 1, 8])
     with filter_cols[0]:
         selected_months = st.multiselect(
             "Months",
@@ -667,6 +667,32 @@ with st.expander("Chart view filters", expanded=False):
             st.session_state["nav_offset_days"] = 0
             st.session_state["chart_max_bars"] = _CHART_MAX_BARS_DEFAULT
             st.rerun()
+    with filter_cols[2]:
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        nav_cols = st.columns(5)
+        if nav_cols[0].button("2 days", key="nav_2d", use_container_width=True):
+            st.session_state["nav_offset_days"] = 2
+            st.session_state["selected_months"] = []
+            st.rerun()
+        if nav_cols[1].button("5 days", key="nav_5d", use_container_width=True):
+            st.session_state["nav_offset_days"] = 5
+            st.session_state["selected_months"] = []
+            st.rerun()
+        if nav_cols[2].button("2 weeks", key="nav_14d", use_container_width=True):
+            st.session_state["nav_offset_days"] = 14
+            st.session_state["chart_max_bars"] = 1400
+            st.session_state["selected_months"] = []
+            st.rerun()
+        if nav_cols[3].button("1 month", key="nav_30d", use_container_width=True):
+            st.session_state["nav_offset_days"] = 30
+            st.session_state["chart_max_bars"] = 1800
+            st.session_state["selected_months"] = []
+            st.rerun()
+        if nav_cols[4].button("Full", key="nav_full", use_container_width=True):
+            st.session_state["nav_offset_days"] = 0
+            st.session_state["chart_max_bars"] = 6000
+            st.session_state["selected_months"] = list(available_months)
+            st.rerun()
     st.session_state["selected_months"] = selected_months
     if selected_months:
         main_df_view = main_df[main_df.index.strftime("%Y-%m").isin(selected_months)]
@@ -677,30 +703,6 @@ with st.expander("Chart view filters", expanded=False):
         end_ts = main_df_view.index.max()
         start_ts = end_ts - pd.Timedelta(days=nav_offset)
         main_df_view = main_df_view[main_df_view.index >= start_ts]
-    nav_cols = st.columns(5)
-    if nav_cols[0].button("2 days", key="nav_2d", use_container_width=True):
-        st.session_state["nav_offset_days"] = 2
-        st.session_state["selected_months"] = []
-        st.rerun()
-    if nav_cols[1].button("5 days", key="nav_5d", use_container_width=True):
-        st.session_state["nav_offset_days"] = 5
-        st.session_state["selected_months"] = []
-        st.rerun()
-    if nav_cols[2].button("2 weeks", key="nav_14d", use_container_width=True):
-        st.session_state["nav_offset_days"] = 14
-        st.session_state["chart_max_bars"] = 1400
-        st.session_state["selected_months"] = []
-        st.rerun()
-    if nav_cols[3].button("1 month", key="nav_30d", use_container_width=True):
-        st.session_state["nav_offset_days"] = 30
-        st.session_state["chart_max_bars"] = 1800
-        st.session_state["selected_months"] = []
-        st.rerun()
-    if nav_cols[4].button("Full", key="nav_full", use_container_width=True):
-        st.session_state["nav_offset_days"] = 0
-        st.session_state["chart_max_bars"] = 6000
-        st.session_state["selected_months"] = list(available_months)
-        st.rerun()
     slider_cols = st.columns(2)
     with slider_cols[0]:
         pool_cap = st.slider(
