@@ -210,12 +210,12 @@ def _bias_label(bias: str | None) -> str:
 def build_main_chart(
     df: pd.DataFrame, signals: dict, params: dict, pair: str, timeframe: str,
     liquidity: dict | None = None,
+    pool_cap: int = 40,
 ) -> go.Figure:
     fig = go.Figure()
     if df.empty:
         fig.update_layout(title=f"{pair} {timeframe} — no data", height=600)
         return fig
-
     fig.add_trace(
         go.Candlestick(
             x=df.index, open=df["open"], high=df["high"],
@@ -359,9 +359,9 @@ def build_main_chart(
     # Cap the visible pool count so the chart stays responsive on the
     # full dataset. The backtester and regime engine still see the full
     # pool list; this only affects the visual overlay.
-    POOL_CAP = 40
+    pool_cap = max(0, int(params.get("pool_cap", 40)))
     pools = (liquidity or {}).get("pools", []) if liquidity else []
-    pools = pools[-POOL_CAP:] if pools else []
+    pools = pools[-pool_cap:] if pool_cap and pools else []
     last_ts = df.index[-1]
     if pools:
         for pool in pools:
@@ -646,9 +646,12 @@ else:
 # still drive run_backtest via the Period widget, so capping only affects
 # the visual overlay density, not the trade count.
 _CHART_MAX_BARS_DEFAULT = 800
+pool_cap = st.slider(
+    "Visible EQH/EQL pools on chart (most recent first)",
+    min_value=0, max_value=80, step=4, value=20,
+    help="0 = hide pools, 80 = show all. Use a small value when many bars are visible to keep the chart readable.",
+)
 chart_view_limit = st.number_input(
-    "Visible bars per chart slice (lower = zoom in)",
-    min_value=150, max_value=3000, step=50,
     value=int(st.session_state.get("chart_max_bars", _CHART_MAX_BARS_DEFAULT)),
     key="chart_max_bars_input",
     help="Lower = zoom in. Higher = see more bars but smaller candles.",
@@ -669,9 +672,9 @@ liquidity_overlays = _compute_liquidity_pools(
     str(end_date) if end_date else "",
     swing_length,
 )
-main_chart_params = {"pd_lookback": int(pd_lookback)}
+main_chart_params = {"pd_lookback": int(pd_lookback), "pool_cap": int(pool_cap)}
 st.plotly_chart(
-    build_main_chart(main_df_view, signals, main_chart_params, pair, timeframe, liquidity_overlays),
+    build_main_chart(main_df_view, signals, main_chart_params, pair, timeframe, liquidity_overlays, pool_cap=int(pool_cap)),
     use_container_width=True,
     key=f"main_chart_{pair}_{timeframe}_{swing_length}",
 )
@@ -679,8 +682,6 @@ st.subheader("Backtest Results")
 run_cfg = {
     "ftmo": {"account_size": 100000, "phase": "challenge",
              "profit_target": 0.10, "max_daily_loss": 0.05,
-             "max_total_loss": 0.10, "timezone": "Europe/Paris"},
-    "risk": {"per_trade_pct": risk_pct, "max_trades_per_day": int(max_trades),
              "daily_loss_limit_r": float(daily_limit_r),
              "max_open_positions": 1},
     "strategy": {
