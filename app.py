@@ -645,10 +645,10 @@ else:
 # Cap the visible chart to keep Plotly responsive; full-period signals
 # still drive run_backtest via the Period widget, so capping only affects
 # the visual overlay density, not the trade count.
-_CHART_MAX_BARS_DEFAULT = 800
+_CHART_MAX_BARS_DEFAULT = 400
 pool_cap = st.slider(
     "Visible EQH/EQL pools on chart (most recent first)",
-    min_value=0, max_value=80, step=4, value=20,
+    min_value=0, max_value=80, step=4, value=8,
     help="0 = hide pools, 80 = show all. Use a small value when many bars are visible to keep the chart readable.",
 )
 chart_view_limit = st.number_input(
