@@ -222,6 +222,22 @@ def build_main_chart(
             low=df["low"], close=df["close"], name=pair,
         )
     )
+    # --- Premium / Discount zones ---
+    pd_state = detect_premium_discount(df, lookback=params.get("pd_lookback", 50))
+    eq = pd_state["equilibrium"]
+    fig.add_hline(y=eq, line=dict(color="orange", width=1, dash="dash"),
+                  annotation_text="Equilibrium", annotation_position="right")
+    fig.add_hrect(
+        y0=pd_state["range_low"], y1=eq,
+        fillcolor="rgba(0,200,0,0.04)", line_width=0, layer="below",
+        annotation_text="Discount", annotation_position="top left",
+    )
+    fig.add_hrect(
+        y0=eq, y1=pd_state["range_high"],
+        fillcolor="rgba(200,0,0,0.04)", line_width=0, layer="below",
+        annotation_text="Premium", annotation_position="top left",
+    )
+    OB_CAP, FVG_CAP, BOS_CAP, CHOCH_CAP, DISP_CAP = 60, 200, 100, 50, 200
 
     # Cap overlay counts to keep Plotly responsive. The engine can produce
     # thousands of FVGs / displacements on a 15 895-bar dataset, but the
@@ -231,9 +247,6 @@ def build_main_chart(
     view_start = df.index[0]
     view_end = df.index[-1]
     in_view = lambda sig: view_start <= getattr(sig, "timestamp", view_start) <= view_end
-    OB_CAP, FVG_CAP, BOS_CAP, CHOCH_CAP, DISP_CAP = 60, 200, 100, 50, 200
-
-    # --- Order Blocks (blue rectangles, mitigation-aware) ---
     active_obs = [o for o in signals.get("ob", []) if in_view(o) and not getattr(o, "mitigated", False)]
     for ob in active_obs[-OB_CAP:]:
         fig.add_shape(
@@ -398,10 +411,23 @@ def build_main_chart(
 
     fig.update_layout(
         title=f"{pair} {timeframe} — SMC overlays",
-        xaxis_rangeslider_visible=False, height=620,
+        xaxis_rangeslider_visible=False, height=820,
         legend=dict(orientation="h", y=1.02, x=0),
+        margin=dict(l=60, r=40, t=80, b=60),
+        dragmode="pan",
+        hovermode="closest",
+        modebar=dict(
+            orientation="h",
+            bgcolor="rgba(255,255,255,0.7)",
+            color="#444",
+            activecolor="#007bff",
+            add=["zoom2d", "pan2d", "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"],
+        ),
     )
+    fig.update_xaxes(fixedrange=False)
+    fig.update_yaxes(fixedrange=False)
     return fig
+
 
 def _plot_equity(equity_curve: list) -> go.Figure:
     if not equity_curve:
@@ -411,7 +437,6 @@ def _plot_equity(equity_curve: list) -> go.Figure:
     fig.add_trace(go.Scatter(x=list(ts), y=list(eq), mode="lines", name="Equity"))
     fig.update_layout(title="Equity Curve", height=300, xaxis_title="Time", yaxis_title="USD")
     return fig
-
 
 def _fmt_pct(x: float) -> str:
     return f"{x * 100:.1f}%" if x <= 1.5 else f"{x:.1f}%"
@@ -593,9 +618,19 @@ for col, tf in zip(mini_cols, ["D", "H4", "H1", "M15"]):
         tf_df = data.get(tf, pd.DataFrame())
         st.plotly_chart(_mini_chart(tf_df.tail(120), tf, pair),
                         use_container_width=True, key=f"mini_{tf}_{pair}")
-
 # -------------------- MAIN CHART --------------------
-st.subheader(f"{pair} {timeframe} — SMC Overlays")
+
+with st.expander("Chart shortcuts (Plotly)", expanded=False):
+    st.markdown(
+        """
+        - **Move / Pan**: hold **Space** + drag (or click the **Pan** button in the toolbar)
+        - **Zoom in / out**: scroll wheel on the chart, or click **Zoom In** / **Zoom Out** in the toolbar
+        - **Box zoom**: hold **Shift** + drag a rectangle (or click the **Box Zoom** toolbar button)
+        - **Auto-fit axes**: click **Reset Axes** in the toolbar
+        - **Save view**: right-click the chart → *Download plot as PNG*
+        """
+    )
+st.caption("Tip: tap the toolbar above the chart to switch between Pan, Zoom, and Reset.")
 
 main_df = data[timeframe]
 if start_date and end_date:
@@ -610,7 +645,16 @@ else:
 # Cap the visible chart to keep Plotly responsive; full-period signals
 # still drive run_backtest via the Period widget, so capping only affects
 # the visual overlay density, not the trade count.
-CHART_MAX_BARS = 1500
+_CHART_MAX_BARS_DEFAULT = 800
+chart_view_limit = st.number_input(
+    "Visible bars per chart slice (lower = zoom in)",
+    min_value=150, max_value=3000, step=50,
+    value=int(st.session_state.get("chart_max_bars", _CHART_MAX_BARS_DEFAULT)),
+    key="chart_max_bars_input",
+    help="Lower = zoom in. Higher = see more bars but smaller candles.",
+)
+st.session_state["chart_max_bars"] = int(chart_view_limit)
+CHART_MAX_BARS = int(chart_view_limit)
 if len(main_df_view) > CHART_MAX_BARS:
     main_df_view = main_df_view.tail(CHART_MAX_BARS)
 signals = _compute_overlays(
