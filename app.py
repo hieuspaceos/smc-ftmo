@@ -645,58 +645,62 @@ for col, tf in zip(mini_cols, ["D", "H4", "H1", "M15"]):
         st.plotly_chart(_mini_chart(tf_df.tail(120), tf, pair),
                         use_container_width=True, key=f"mini_{tf}_{pair}")
 # -------------------- MAIN CHART --------------------
-
-with st.expander("Chart tips & shortcuts (Plotly)", expanded=False):
-    st.markdown(
-        """
-        - **Drag**: Box zoom — draw a rectangle to zoom in.
-        - **Pan / Move**: click the **Pan** button on the toolbar, then drag.
-        - **Zoom in / out**: scroll wheel on the chart.
-        - **Auto-fit axes**: click **Reset Axes** in the toolbar, or double-click.
-        - **Toggle overlays**: single-click an item in the legend to hide it; double-click to isolate it.
-        - **Save view**: right-click the chart → *Download plot as PNG*.
-        """
-    )
 _CHART_MAX_BARS_DEFAULT = 400
+st.markdown("**Chart view**")
 main_df = data[timeframe]
-nav_offset = int(st.session_state.get("nav_offset_days", 0))
-if nav_offset > 0:
-    end_ts = main_df.index.max()
-    start_ts = end_ts - pd.Timedelta(days=nav_offset)
-    main_df_view = main_df[main_df.index >= start_ts]
-elif start_date and end_date:
-    try:
-        start_ts = pd.Timestamp(start_date)
-        end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
-        main_df_view = main_df[(main_df.index >= start_ts) & (main_df.index < end_ts)]
-    except Exception:
-        main_df_view = main_df.tail(500)
-else:
-    main_df_view = main_df.tail(500)
-nav_offset = int(st.session_state.get("nav_offset_days", 0))
-nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
-with nav_col1:
-    st.caption("Quick navigation")
-with nav_col2:
-    nav_cols = st.columns(5)
-    if nav_cols[0].button("2 days", key="nav_2d", use_container_width=True):
-        st.session_state["nav_offset_days"] = 2
-        st.rerun()
-    if nav_cols[1].button("5 days", key="nav_5d", use_container_width=True):
-        st.session_state["nav_offset_days"] = 5
-        st.rerun()
-    if nav_cols[2].button("2 weeks", key="nav_14d", use_container_width=True):
-        st.session_state["nav_offset_days"] = 14
-        st.session_state["chart_max_bars"] = 1400
-        st.rerun()
-    if nav_cols[3].button("1 month", key="nav_30d", use_container_width=True):
-        st.session_state["nav_offset_days"] = 30
-        st.session_state["chart_max_bars"] = 1800
-        st.rerun()
-    if nav_cols[4].button("Full", key="nav_full", use_container_width=True):
+available_months = sorted({ts.strftime("%Y-%m") for ts in main_df.index})
+if "selected_months" not in st.session_state:
+    st.session_state["selected_months"] = list(available_months[-3:]) if available_months else []
+month_cols = st.columns([4, 1])
+with month_cols[0]:
+    selected_months = st.multiselect(
+        "Filter by month",
+        options=available_months,
+        default=st.session_state["selected_months"],
+        key="months_filter",
+        help="Pick one or more months to display. Leave empty to show all.",
+    )
+with month_cols[1]:
+    if st.button("Reset", key="reset_filters", use_container_width=True):
+        st.session_state["selected_months"] = list(available_months)
         st.session_state["nav_offset_days"] = 0
-        st.session_state["chart_max_bars"] = 6000
+        st.session_state["chart_max_bars"] = _CHART_MAX_BARS_DEFAULT
         st.rerun()
+st.session_state["selected_months"] = selected_months
+if selected_months:
+    main_df_view = main_df[main_df.index.strftime("%Y-%m").isin(selected_months)]
+else:
+    main_df_view = main_df
+nav_offset = int(st.session_state.get("nav_offset_days", 0))
+if nav_offset > 0 and not main_df_view.empty:
+    end_ts = main_df_view.index.max()
+    start_ts = end_ts - pd.Timedelta(days=nav_offset)
+    main_df_view = main_df_view[main_df_view.index >= start_ts]
+st.caption("Quick navigation")
+nav_cols = st.columns(5)
+if nav_cols[0].button("2 days", key="nav_2d", use_container_width=True):
+    st.session_state["nav_offset_days"] = 2
+    st.session_state["selected_months"] = []
+    st.rerun()
+if nav_cols[1].button("5 days", key="nav_5d", use_container_width=True):
+    st.session_state["nav_offset_days"] = 5
+    st.session_state["selected_months"] = []
+    st.rerun()
+if nav_cols[2].button("2 weeks", key="nav_14d", use_container_width=True):
+    st.session_state["nav_offset_days"] = 14
+    st.session_state["chart_max_bars"] = 1400
+    st.session_state["selected_months"] = []
+    st.rerun()
+if nav_cols[3].button("1 month", key="nav_30d", use_container_width=True):
+    st.session_state["nav_offset_days"] = 30
+    st.session_state["chart_max_bars"] = 1800
+    st.session_state["selected_months"] = []
+    st.rerun()
+if nav_cols[4].button("Full", key="nav_full", use_container_width=True):
+    st.session_state["nav_offset_days"] = 0
+    st.session_state["chart_max_bars"] = 6000
+    st.session_state["selected_months"] = list(available_months)
+    st.rerun()
 col_pool, col_bars = st.columns(2)
 with col_pool:
     pool_cap = st.slider(
@@ -712,17 +716,15 @@ with col_bars:
         key="chart_max_bars_input",
         help="Lower = zoom in. Higher = see more bars but smaller candles. Max 8000 = ~3 months of M15 data.",
     )
-st.session_state["chart_max_bars"] = int(chart_view_limit)
 CHART_MAX_BARS = int(chart_view_limit)
 if len(main_df_view) > CHART_MAX_BARS:
     main_df_view = main_df_view.tail(CHART_MAX_BARS)
-with nav_col3:
-    if not main_df_view.empty:
-        view_start = main_df_view.index[0].strftime("%Y-%m-%d")
-        view_end = main_df_view.index[-1].strftime("%Y-%m-%d")
-        st.caption(
-            f"View: {view_start} → {view_end}  ({len(main_df_view)} bars)"
-        )
+if not main_df_view.empty:
+    view_start = main_df_view.index[0].strftime("%Y-%m-%d")
+    view_end = main_df_view.index[-1].strftime("%Y-%m-%d")
+    st.caption(
+        f"View: {view_start} → {view_end}  ({len(main_df_view)} bars)"
+    )
 signals = _compute_overlays(
     pair, timeframe,
     str(start_date) if start_date else "",
