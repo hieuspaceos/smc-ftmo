@@ -652,6 +652,8 @@ pool_cap = st.slider(
     help="0 = hide pools, 80 = show all. Use a small value when many bars are visible to keep the chart readable.",
 )
 chart_view_limit = st.number_input(
+    "Visible bars per chart slice (lower = zoom in)",
+    min_value=150, max_value=3000, step=50,
     value=int(st.session_state.get("chart_max_bars", _CHART_MAX_BARS_DEFAULT)),
     key="chart_max_bars_input",
     help="Lower = zoom in. Higher = see more bars but smaller candles.",
