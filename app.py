@@ -216,27 +216,32 @@ def build_main_chart(
     if df.empty:
         fig.update_layout(title=f"{pair} {timeframe} — no data", height=600)
         return fig
-    fig.add_trace(
-        go.Candlestick(
-            x=df.index, open=df["open"], high=df["high"],
-            low=df["low"], close=df["close"], name=pair,
+    overlays = params.get("overlays", {}) or {}
+    def _on(key: str) -> bool:
+        return overlays.get(key, True)
+    if _on("candles"):
+        fig.add_trace(
+            go.Candlestick(
+                x=df.index, open=df["open"], high=df["high"],
+                low=df["low"], close=df["close"], name=pair,
+            )
         )
-    )
     # --- Premium / Discount zones ---
     pd_state = detect_premium_discount(df, lookback=params.get("pd_lookback", 50))
-    eq = pd_state["equilibrium"]
-    fig.add_hline(y=eq, line=dict(color="orange", width=1, dash="dash"),
-                  annotation_text="Equilibrium", annotation_position="right")
-    fig.add_hrect(
-        y0=pd_state["range_low"], y1=eq,
-        fillcolor="rgba(0,200,0,0.04)", line_width=0, layer="below",
-        annotation_text="Discount", annotation_position="top left",
-    )
-    fig.add_hrect(
-        y0=eq, y1=pd_state["range_high"],
-        fillcolor="rgba(200,0,0,0.04)", line_width=0, layer="below",
-        annotation_text="Premium", annotation_position="top left",
-    )
+    if _on("premium_discount"):
+        eq = pd_state["equilibrium"]
+        fig.add_hline(y=eq, line=dict(color="orange", width=1, dash="dash"),
+                      annotation_text="Equilibrium", annotation_position="right")
+        fig.add_hrect(
+            y0=pd_state["range_low"], y1=eq,
+            fillcolor="rgba(0,200,0,0.04)", line_width=0, layer="below",
+            annotation_text="Discount", annotation_position="top left",
+        )
+        fig.add_hrect(
+            y0=eq, y1=pd_state["range_high"],
+            fillcolor="rgba(200,0,0,0.04)", line_width=0, layer="below",
+            annotation_text="Premium", annotation_position="top left",
+        )
     OB_CAP, FVG_CAP, BOS_CAP, CHOCH_CAP, DISP_CAP = 60, 200, 100, 50, 200
 
     # Cap overlay counts to keep Plotly responsive. The engine can produce
@@ -247,102 +252,105 @@ def build_main_chart(
     view_start = df.index[0]
     view_end = df.index[-1]
     in_view = lambda sig: view_start <= getattr(sig, "timestamp", view_start) <= view_end
-    active_obs = [o for o in signals.get("ob", []) if in_view(o) and not getattr(o, "mitigated", False)]
-    for ob in active_obs[-OB_CAP:]:
-        fig.add_shape(
-            type="rect", x0=ob.timestamp, x1=df.index[-1],
-            y0=ob.price * 0.999, y1=ob.price * 1.001,
-            line=dict(color="rgba(0, 80, 255, 0.0)"),
-            fillcolor="rgba(0, 80, 255, 0.25)", layer="below",
-        )
-
+    if _on("ob"):
+        active_obs = [o for o in signals.get("ob", []) if in_view(o) and not getattr(o, "mitigated", False)]
+        for ob in active_obs[-OB_CAP:]:
+            fig.add_shape(
+                type="rect", x0=ob.timestamp, x1=df.index[-1],
+                y0=ob.price * 0.999, y1=ob.price * 1.001,
+                line=dict(color="rgba(0, 80, 255, 0.0)"),
+                fillcolor="rgba(0, 80, 255, 0.25)", layer="below",
+            )
     # --- Fair Value Gaps (yellow rectangles at actual price range) ---
     # Use the top/bottom prices of each FVG so candles aren't squashed by a
     # constant y=1.0 bar trace.
     active_fvgs = [f for f in signals.get("fvg", []) if in_view(f) and not getattr(f, "mitigated", False)]
-    for fvg in active_fvgs[-FVG_CAP:]:
-        top = getattr(fvg, "top", None)
-        bottom = getattr(fvg, "bottom", None)
-        if top is None or bottom is None:
-            continue
-        fig.add_shape(
-            type="rect",
-            x0=fvg.timestamp, x1=df.index[-1],
-            y0=float(bottom), y1=float(top),
-            line=dict(color="rgba(255, 215, 0, 0.0)"),
-            fillcolor="rgba(255, 215, 0, 0.30)",
-            layer="below",
-        )
+    if _on("fvg"):
+        for fvg in active_fvgs[-FVG_CAP:]:
+            top = getattr(fvg, "top", None)
+            bottom = getattr(fvg, "bottom", None)
+            if top is None or bottom is None:
+                continue
+            fig.add_shape(
+                type="rect",
+                x0=fvg.timestamp, x1=df.index[-1],
+                y0=float(bottom), y1=float(top),
+                line=dict(color="rgba(255, 215, 0, 0.0)"),
+                fillcolor="rgba(255, 215, 0, 0.30)",
+                layer="below",
+            )
     # Single dummy trace so FVG still shows up in the legend with a swatch.
-    if active_fvgs:
+    if active_fvgs and _on("fvg"):
         fig.add_trace(go.Scatter(
             x=[None], y=[None], mode="markers",
             marker=dict(size=12, symbol="square", color="rgba(255,215,0,0.6)"),
             name="FVG", showlegend=True, hoverinfo="skip",
         ))
-    # --- BOS / CHoCH (vectorized scatter+text, no per-event add_annotation) ---
-    bos_sigs = [s for s in signals.get("bos", []) if in_view(s)][-BOS_CAP:]
-    bos_bull = [(s.timestamp, s.price) for s in bos_sigs if s.direction == "bullish"]
-    bos_bear = [(s.timestamp, s.price) for s in bos_sigs if s.direction != "bullish"]
-    if bos_bull:
-        fig.add_trace(go.Scatter(
-            x=[t for t, _ in bos_bull], y=[p for _, p in bos_bull],
-            mode="markers+text", text=["▲"] * len(bos_bull),
-            textposition="top center", textfont=dict(color="green", size=14),
-            marker=dict(symbol="triangle-up", color="green", size=10),
-            name="BOS ↑", showlegend=True, hoverinfo="skip",
-        ))
-    if bos_bear:
-        fig.add_trace(go.Scatter(
-            x=[t for t, _ in bos_bear], y=[p for _, p in bos_bear],
-            mode="markers+text", text=["▼"] * len(bos_bear),
-            textposition="bottom center", textfont=dict(color="red", size=14),
-            marker=dict(symbol="triangle-down", color="red", size=10),
-            name="BOS ↓", showlegend=True, hoverinfo="skip",
-        ))
-    choch_sigs = [s for s in signals.get("choch", []) if in_view(s)][-CHOCH_CAP:]
-    ch_bull = [(s.timestamp, s.price) for s in choch_sigs if s.direction == "bullish"]
-    ch_bear = [(s.timestamp, s.price) for s in choch_sigs if s.direction != "bullish"]
-    if ch_bull:
-        fig.add_trace(go.Scatter(
-            x=[t for t, _ in ch_bull], y=[p for _, p in ch_bull],
-            mode="text", text=["CH"] * len(ch_bull),
-            textposition="top center", textfont=dict(color="lime", size=10),
-            name="CHoCH ↑", showlegend=True, hoverinfo="skip",
-        ))
-    if ch_bear:
-        fig.add_trace(go.Scatter(
-            x=[t for t, _ in ch_bear], y=[p for _, p in ch_bear],
-            mode="text", text=["CH"] * len(ch_bear),
-            textposition="bottom center", textfont=dict(color="orangered", size=10),
-            name="CHoCH ↓", showlegend=True, hoverinfo="skip",
-        ))
+    if _on("bos"):
+        bos_sigs = [s for s in signals.get("bos", []) if in_view(s)][-BOS_CAP:]
+        bos_bull = [(s.timestamp, s.price) for s in bos_sigs if s.direction == "bullish"]
+        bos_bear = [(s.timestamp, s.price) for s in bos_sigs if s.direction != "bullish"]
+        if bos_bull:
+            fig.add_trace(go.Scatter(
+                x=[t for t, _ in bos_bull], y=[p for _, p in bos_bull],
+                mode="markers+text", text=["▲"] * len(bos_bull),
+                textposition="top center", textfont=dict(color="green", size=14),
+                marker=dict(symbol="triangle-up", color="green", size=10),
+                name="BOS ↑", showlegend=True, hoverinfo="skip",
+            ))
+        if bos_bear:
+            fig.add_trace(go.Scatter(
+                x=[t for t, _ in bos_bear], y=[p for _, p in bos_bear],
+                mode="markers+text", text=["▼"] * len(bos_bear),
+                textposition="bottom center", textfont=dict(color="red", size=14),
+                marker=dict(symbol="triangle-down", color="red", size=10),
+                name="BOS ↓", showlegend=True, hoverinfo="skip",
+            ))
+    if _on("choch"):
+        choch_sigs = [s for s in signals.get("choch", []) if in_view(s)][-CHOCH_CAP:]
+        ch_bull = [(s.timestamp, s.price) for s in choch_sigs if s.direction == "bullish"]
+        ch_bear = [(s.timestamp, s.price) for s in choch_sigs if s.direction != "bullish"]
+        if ch_bull:
+            fig.add_trace(go.Scatter(
+                x=[t for t, _ in ch_bull], y=[p for _, p in ch_bull],
+                mode="text", text=["CH"] * len(ch_bull),
+                textposition="top center", textfont=dict(color="lime", size=10),
+                name="CHoCH ↑", showlegend=True, hoverinfo="skip",
+            ))
+        if ch_bear:
+            fig.add_trace(go.Scatter(
+                x=[t for t, _ in ch_bear], y=[p for _, p in ch_bear],
+                mode="text", text=["CH"] * len(ch_bear),
+                textposition="bottom center", textfont=dict(color="orangered", size=10),
+                name="CHoCH ↓", showlegend=True, hoverinfo="skip",
+            ))
     # Sweep markers: bull / bear into two Scatter traces (was 754 traces).
-    sweep_bull_x, sweep_bull_y, sweep_bear_x, sweep_bear_y = [], [], [], []
-    for sig in signals.get("sweep", []):
-        if in_view(sig):
-            if sig.direction == "bullish":
-                sweep_bull_x.append(sig.timestamp); sweep_bull_y.append(sig.price)
-            else:
-                sweep_bear_x.append(sig.timestamp); sweep_bear_y.append(sig.price)
-    if sweep_bull_x:
-        fig.add_trace(go.Scatter(
-            x=sweep_bull_x, y=sweep_bull_y, mode="markers",
-            marker=dict(symbol="x", color="cyan", size=11),
-            name="Sweep ↑", showlegend=True,
-            hovertemplate="Sweep bull @ %{x}<br>price=%{y:.5f}<extra></extra>",
-        ))
-    if sweep_bear_x:
-        fig.add_trace(go.Scatter(
-            x=sweep_bear_x, y=sweep_bear_y, mode="markers",
-            marker=dict(symbol="x", color="magenta", size=11),
-            name="Sweep ↓", showlegend=True,
-            hovertemplate="Sweep bear @ %{x}<br>price=%{y:.5f}<extra></extra>",
-        ))
+    if _on("sweep"):
+        sweep_bull_x, sweep_bull_y, sweep_bear_x, sweep_bear_y = [], [], [], []
+        for sig in signals.get("sweep", []):
+            if in_view(sig):
+                if sig.direction == "bullish":
+                    sweep_bull_x.append(sig.timestamp); sweep_bull_y.append(sig.price)
+                else:
+                    sweep_bear_x.append(sig.timestamp); sweep_bear_y.append(sig.price)
+        if sweep_bull_x:
+            fig.add_trace(go.Scatter(
+                x=sweep_bull_x, y=sweep_bull_y, mode="markers",
+                marker=dict(symbol="x", color="cyan", size=11),
+                name="Sweep ↑", showlegend=True,
+                hovertemplate="Sweep bull @ %{x}<br>price=%{y:.5f}<extra></extra>",
+            ))
+        if sweep_bear_x:
+            fig.add_trace(go.Scatter(
+                x=sweep_bear_x, y=sweep_bear_y, mode="markers",
+                marker=dict(symbol="x", color="magenta", size=11),
+                name="Sweep ↓", showlegend=True,
+                hovertemplate="Sweep bear @ %{x}<br>price=%{y:.5f}<extra></extra>",
+            ))
     # Displacement highlights: add a dummy trace so the legend still has the
     # "Displacement" swatch without forcing a fake y=1.0 bar that would
     # squash the candle y-axis.
-    if signals.get("displacement"):
+    if signals.get("displacement") and _on("displacement"):
         fig.add_trace(go.Scatter(
             x=[None], y=[None], mode="markers",
             marker=dict(
@@ -351,21 +359,6 @@ def build_main_chart(
             ),
             name="Displacement", showlegend=True, hoverinfo="skip",
         ))
-    # --- Premium / Discount zones ---
-    pd_state = detect_premium_discount(df, lookback=params.get("pd_lookback", 50))
-    eq = pd_state["equilibrium"]
-    fig.add_hline(y=eq, line=dict(color="orange", width=1, dash="dash"),
-                  annotation_text="Equilibrium", annotation_position="right")
-    fig.add_hrect(
-        y0=pd_state["range_low"], y1=eq,
-        fillcolor="rgba(0,200,0,0.04)", line_width=0, layer="below",
-        annotation_text="Discount", annotation_position="top left",
-    )
-    fig.add_hrect(
-        y0=eq, y1=pd_state["range_high"],
-        fillcolor="rgba(200,0,0,0.04)", line_width=0, layer="below",
-        annotation_text="Premium", annotation_position="top left",
-    )
 
     # --- Liquidity Pools (EQH / EQL) ---------------------------------------
     # Cap the visible pool count so the chart stays responsive on the
@@ -389,38 +382,40 @@ def build_main_chart(
                 "rgba(0, 200, 200, 0.85)" if side == "high"
                 else "rgba(200, 0, 200, 0.85)"
             )
-            fig.add_shape(
-                type="rect",
-                x0=activation_ts, x1=last_ts,
-                y0=level_low, y1=level_high,
-                fillcolor=color, line=dict(color=edge, width=1),
-                layer="below",
-            )
-        sweep_bull_x, sweep_bull_y, sweep_bear_x, sweep_bear_y = [], [], [], []
+            if (side == "high" and _on("eqh_pool_swept")) or (
+                side == "low" and _on("eql_pool_swept")
+            ):
+                fig.add_shape(
+                    type="rect",
+                    x0=activation_ts, x1=last_ts,
+                    y0=level_low, y1=level_high,
+                    fillcolor=color, line=dict(color=edge, width=1),
+                    layer="below",
+                )
+        eqh_x, eqh_y, eql_x, eql_y = [], [], [], []
         for pool in pools:
             if not pool["swept"] or pool["sweep_ts"] is None:
                 continue
             ts = pool["sweep_ts"]
             price = pool["level_mean"]
             if pool["side"] == "high":
-                sweep_bull_x.append(ts); sweep_bull_y.append(price)
+                eqh_x.append(ts); eqh_y.append(price)
             else:
-                sweep_bear_x.append(ts); sweep_bear_y.append(price)
-        if sweep_bull_x:
+                eql_x.append(ts); eql_y.append(price)
+        if eqh_x and _on("eqh_pool_swept"):
             fig.add_trace(go.Scatter(
-                x=sweep_bull_x, y=sweep_bull_y, mode="markers",
+                x=eqh_x, y=eqh_y, mode="markers",
                 marker=dict(symbol="diamond", color="teal", size=10),
                 name="EQH Pool swept", showlegend=True,
                 hovertemplate="EQH sweep @ %{x}<br>level=%{y:.5f}<extra></extra>",
             ))
-        if sweep_bear_x:
+        if eql_x and _on("eql_pool_swept"):
             fig.add_trace(go.Scatter(
-                x=sweep_bear_x, y=sweep_bear_y, mode="markers",
+                x=eql_x, y=eql_y, mode="markers",
                 marker=dict(symbol="diamond", color="purple", size=10),
                 name="EQL Pool swept", showlegend=True,
                 hovertemplate="EQL sweep @ %{x}<br>level=%{y:.5f}<extra></extra>",
             ))
-
     fig.update_layout(
         title=f"{pair} {timeframe} — SMC overlays",
         xaxis_rangeslider_visible=True, height=900,
@@ -739,7 +734,47 @@ liquidity_overlays = _compute_liquidity_pools(
     str(end_date) if end_date else "",
     swing_length,
 )
-main_chart_params = {"pd_lookback": int(pd_lookback), "pool_cap": int(pool_cap)}
+# Overlay visibility toggles. Defaults mirror the existing legend so the
+# chart looks identical on first load; checking a box hides the trace on
+# the next render and saves the user from fighting Plotly's legend.
+overlay_flags = {
+    "candles": True,
+    "ob": True,
+    "fvg": True,
+    "bos": True,
+    "choch": True,
+    "sweep": True,
+    "displacement": True,
+    "eqh_pool_swept": True,
+    "eql_pool_swept": True,
+    "premium_discount": True,
+}
+overlay_cols = st.columns(6)
+with overlay_cols[0]:
+    overlay_flags["candles"] = st.checkbox("Candles", True, key="ov_candles")
+    overlay_flags["fvg"] = st.checkbox("FVG", True, key="ov_fvg")
+with overlay_cols[1]:
+    overlay_flags["ob"] = st.checkbox("OB", True, key="ov_ob")
+    overlay_flags["bos"] = st.checkbox("BOS", True, key="ov_bos")
+with overlay_cols[2]:
+    overlay_flags["choch"] = st.checkbox("CHoCH", True, key="ov_choch")
+    overlay_flags["sweep"] = st.checkbox("Sweep", True, key="ov_sweep")
+with overlay_cols[3]:
+    overlay_flags["displacement"] = st.checkbox("Displacement", True, key="ov_disp")
+    overlay_flags["eqh_pool_swept"] = st.checkbox("EQH swept", True, key="ov_eqh")
+with overlay_cols[4]:
+    overlay_flags["eql_pool_swept"] = st.checkbox("EQL swept", True, key="ov_eql")
+    overlay_flags["premium_discount"] = st.checkbox("P/D zones", True, key="ov_pd")
+with overlay_cols[5]:
+    if st.button("All on", key="ov_all_on", use_container_width=True):
+        for k in overlay_flags:
+            st.session_state[f"ov_{k}"] = True
+        st.rerun()
+    if st.button("All off", key="ov_all_off", use_container_width=True):
+        for k in overlay_flags:
+            st.session_state[f"ov_{k}"] = False
+        st.rerun()
+main_chart_params = {"pd_lookback": int(pd_lookback), "pool_cap": int(pool_cap), "overlays": overlay_flags}
 st.plotly_chart(
     build_main_chart(main_df_view, signals, main_chart_params, pair, timeframe, liquidity_overlays, pool_cap=int(pool_cap)),
     use_container_width=True,
