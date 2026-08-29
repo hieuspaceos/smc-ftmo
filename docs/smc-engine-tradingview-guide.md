@@ -2,7 +2,8 @@
 status: active
 title: "SMC Engine TradingView Guide"
 created: "2026-08-29"
-updated: "2026-08-29"
+updated: "2026-08-30"
+version: "v1.2"
 ---
 
 # SMC Engine TradingView Guide
@@ -36,15 +37,17 @@ bounded FVG, sweep, and pool context; `Debug` adds raw swings, displacement,
 and rejection reasons; `Custom` honors the individual toggles under
 `Display > Custom: …`.
 
-| Preset | Shows |
-|---|---|
-| `Decision` | Structure, selected fresh OB, current bias, H4 P/D, Rulebook state, entry/SL/TP |
-| `Context` | Everything in `Decision` + bounded FVG, sweep, pool context |
-| `Debug` | Everything in `Context` + raw swings, displacement, debug rows |
+| `Decision` | Structure (BOS / CHoCH), selected fresh OB, current bias, H4 P/D, Rulebook state, entry/SL/TP |
+| `Context` | Everything in `Decision` + bounded FVG, sweep, pool context (when toggled) |
+| `Debug` | Force-on all overlays: swings + step lines + sweeps + FVGs + pools + displacement |
 | `Custom` | Whatever the Custom toggles enable |
 
-Raw swings, displacement, FVG, sweeps, and EQH/EQL pools are off by default
-in the Rulebook profile. Open `Engine Audit` to inspect the parity path.
+Raw swings, step lines, equilibrium, sweeps, and EQH/EQL pools are hidden by
+default in the Decision / Context presets to keep the chart clean. Use
+`Engine Audit` profile or `Debug` preset for parity verification. The
+TradingView built-in `Visible Range Volume Profile` is recommended for
+visual structure (POC, Value Area) alongside this indicator.
+
 
 ## 4. Rulebook Manual Gates
 

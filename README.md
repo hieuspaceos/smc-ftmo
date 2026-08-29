@@ -5,14 +5,15 @@ Web app local với `Streamlit` + `Plotly` để học, backtest, và cải ti�
 ## Tình trạng hiện tại
 
 - Core engine causal đã thay thế dependency `smartmoneyconcepts`.
-- Regime V2 + liquidity pools đã được ship dưới dạng extension không phá baseline.
 - Pine v6 indicator (`tradingview/smc-engine-indicator.pine`) ports the same
   causal core cho TradingView với parity tooling (`scripts/export-pine-parity-fixtures.py`,
   `scripts/compare-pine-parity.py`, `scripts/capture-frozen-feed.py`).
+- Pine indicator v1.2: 4 display presets (Decision/Context/Debug/Custom), 11-gate Rulebook
+  selector, parity tests passing 175/175, runs on TradingView Premium without timeout.
 - Phase 13 breaker/body upgrade đang ở trạng thái pending trong `plans/`.
-- Full suite hiện tại: `209 passed`.
+- Full suite hiện tại: `209 passed` (engine) + `15 passed` (Pine parity).
 - Smoke baseline hiện tại: `32 trades`, `WR 81.25%`, `PF 8.29`, `Max DD 1.17%`.
-
+- Thành tựu: Backtest parity giữa Python engine và Pine indicator hoàn thành v1.2.
 ## Tính năng
 
 - Multi-timeframe chart `D / H4 / H1 / M15` với overlays SMC tự động.

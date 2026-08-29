@@ -2,8 +2,7 @@
 status: active
 title: "Rule Book → Pine Mapping"
 created: "2026-08-29"
-updated: "2026-08-29"
----
+updated: "2026-08-30"
 
 # Rule Book → Pine Mapping
 

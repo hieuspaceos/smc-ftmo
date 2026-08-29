@@ -2,9 +2,9 @@
 status: active
 title: "SMC Engine Verification"
 created: "2026-08-29"
-updated: "2026-08-29"
----
-
+updated: "2026-08-30"
+version: "v1.2"
+pine-status: "parity-achieved"
 # SMC Engine Verification
 
 ## Đọc nhanh bằng tiếng Việt

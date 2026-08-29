@@ -3,7 +3,10 @@
 > Luật chơi khi trade tay. Lớp tín hiệu khớp `config.yaml` + `src/smc_engine/`.
 > 3 dòng đóng băng 8 tuần **siết hơn bot** — không đổi slider engine.
 > Thiếu khối A hoặc score < 4 = không vào lệnh. Không ngoại lệ.
-
+>
+> **Milestone 2026-08-30**: Backtest parity giữa Python engine và Pine v6 indicator
+> hoàn thành (v1.2). Rule book mapping đầy đủ ở `docs/rulebook-pine-mapping.md`.
+> Pine script chạy ổn trên TradingView Premium với 4 display presets.
 **Câu nhớ:** Bias trước, structure sau, OB rồi mới nhìn sweep. Liquidity là bối cảnh, không phải lệnh.
 
 Setup học mặc định (khớp app, **đóng băng 8 tuần**):
