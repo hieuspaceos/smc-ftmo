@@ -105,7 +105,32 @@ Does not change:
 - expiry timestamp
 - structure provenance
 
-## Extension 3 — Regime Detection
+## Extension 3 — Liquidity Pools
+
+`src/smc_engine/liquidity_pools.py`
+
+### Purpose
+
+Detect EQH/EQL-style liquidity pools from confirmed swings and track whether the
+pool was later swept with reclaim semantics.
+
+### Rules
+
+| Rule | Meaning |
+|---|---|
+| Fixed tolerance | pool membership uses an internal `0.15 × ATR` tolerance |
+| Confirmation | a pool activates when the **second** matching swing confirms |
+| Extension | later matching swings extend the pool only from that bar forward |
+| Sweep | high pool needs `high > level_max` **and** `close < level_max`; low pool is symmetric |
+| Causality | future members cannot rewrite prior sweep outcomes |
+
+### Verified behavior
+
+- equal highs / equal lows cluster into typed `LiquidityPoolEvent` objects
+- ordinary breakouts that close through the level are **not** mislabeled as sweeps
+- a third matching swing does not delay the pool's original confirmation time
+
+## Extension 4 — Regime Detection V2
 
 `src/smc_engine/regime.py`
 
@@ -119,21 +144,32 @@ Choose when to prefer classic OB entries vs breaker overlays.
 |---|---|
 | `off` | baseline OB-classic only |
 | `on` | always include breakers |
-| `auto` | derive breaker weight from regime metrics |
+| `auto` | derive breaker weight from structure-aware regime metrics |
 
-### Current heuristic
+### Structure-aware classifier
 
-- `trend_strength = |net move| / sum(|moves|)`
-- `choppiness = reversal fraction`
+Regime V2 scores the recent structure window (up to 600 bars) instead of
+price-path chop alone:
 
-### Current caveat
+| Signal | Role |
+|---|---|
+| BOS density + directional share | continuation / trend persistence |
+| CHoCH density | reversal pressure |
+| sweep density | liquidity-take / range pressure |
+| EQH/EQL pool density | equal-level liquidity concentration |
+| dominant BOS direction | plain-language explanation |
 
-The heuristic classifies EURUSD M15 2026 as `ranging` because the path is
-choppy, even though the higher-timeframe bias is broadly bullish. So
-`auto` currently behaves like `on` there.
+Labels and weights:
 
-That means the regime layer is implemented and tested, but still heuristic,
-not authoritative.
+| Label | Meaning | `ob_weight` | `breaker_weight` |
+|---|---|---|---|
+| `trending` | strong continuation, contained ranging pressure | 1.0 | 0.0 |
+| `ranging` | heavy reversal + sweep pressure, reinforced by pool density | 0.0 | 1.0 |
+| `mixed` | neither clean trend nor clean range | 1.0 | 0.0 |
+
+Sparse recent structure falls back to the older price-path metrics and still
+stays conservative (`breaker_weight=0` unless a clean trend/range call is made).
+`RegimeState.explanation` reports densities per 100 bars in plain language.
 
 ## Why Not Put Everything Into `order_blocks.py`
 
@@ -147,6 +183,6 @@ The current split keeps responsibilities clean:
 - `order_blocks.py` = canonical OB lifecycle
 - `breaker_blocks.py` = role-reversal layer
 - `ob_body_mode.py` = geometry transform
-- `regime.py` = strategy-selection heuristic
+- `regime.py` = structure-aware strategy-selection (Regime V2)
 
 That is easier to test, easier to rollback, and easier to explain.

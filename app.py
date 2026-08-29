@@ -26,9 +26,12 @@ from src.bias_detector import (
 )
 from src.confluence import build_setup_dict, reasons_to_text, score_setup
 from src.journal import Journal
-from src.premium_discount import detect_premium_discount, pd_annotations
+from src.smc_engine.liquidity_pools import detect_liquidity_pools
+from src.smc_engine.swings import detect_swings
 from src.smc_signals import SMCSignals, calculate_atr, get_smc_overlays
 from src.backtester import compute_metrics, run_backtest
+from src.smc_engine.regime import detect_regime
+from src.premium_discount import detect_premium_discount
 
 
 CONFIG_PATH = Path("config.yaml")
@@ -89,6 +92,83 @@ def _compute_overlays(
     return det.get_signals(df_view)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _compute_liquidity_pools(
+    pair: str,
+    start_iso: str,
+    end_iso: str,
+    swing_length: int,
+):
+    data = load_multi_tf_data(pair)
+    df = data.get("M15", pd.DataFrame())
+    if df.empty:
+        return {"pools": [], "levels": []}
+    start_ts = pd.Timestamp(start_iso) if start_iso else df.index[0]
+    end_ts = pd.Timestamp(end_iso) if end_iso else df.index[-1]
+    tz = getattr(df.index, "tz", None)
+    if tz is not None:
+        if getattr(start_ts, "tzinfo", None) is None:
+            start_ts = start_ts.tz_localize(tz)
+        if getattr(end_ts, "tzinfo", None) is None:
+            end_ts = end_ts.tz_localize(tz)
+    df_view = df[(df.index >= start_ts) & (df.index <= end_ts)].copy()
+    if df_view.empty:
+        return {"pools": [], "levels": []}
+    left = right = max(2, int(swing_length) // 2)
+    atr = calculate_atr(df_view)
+    swings = detect_swings(df_view, left=left, right=right)
+    pools = detect_liquidity_pools(df_view, swings, atr)
+    serialized_pools = [
+        {
+            "id": ev.id,
+            "side": ev.side,
+            "activation_ts": ev.activation_timestamp,
+            "level_mean": ev.level_mean,
+            "level_min": ev.level_min,
+            "level_max": ev.level_max,
+            "swept": ev.swept,
+            "sweep_ts": ev.sweep_timestamp,
+        }
+        for ev in pools.events
+    ]
+    return {"pools": serialized_pools}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _compute_regime_state(
+    pair: str,
+    start_iso: str,
+    end_iso: str,
+    swing_length: int,
+    disp_atr: float,
+    sweep_buf: float,
+):
+    data = load_multi_tf_data(pair)
+    df = data.get("M15", pd.DataFrame())
+    if df.empty:
+        return None
+    start_ts = pd.Timestamp(start_iso) if start_iso else df.index[0]
+    end_ts = pd.Timestamp(end_iso) if end_iso else df.index[-1]
+    tz = getattr(df.index, "tz", None)
+    if tz is not None:
+        if getattr(start_ts, "tzinfo", None) is None:
+            start_ts = start_ts.tz_localize(tz)
+        if getattr(end_ts, "tzinfo", None) is None:
+            end_ts = end_ts.tz_localize(tz)
+    df_view = df[(df.index >= start_ts) & (df.index <= end_ts)].copy()
+    if df_view.empty:
+        return None
+    left = right = max(2, int(swing_length) // 2)
+    return detect_regime(
+        df_view,
+        swing_left=left,
+        swing_right=right,
+        sweep_atr_buffer=float(sweep_buf),
+        displacement_atr_mult=float(disp_atr),
+    )
+    return {"pools": serialized_pools}
+
+
 def _mini_chart(df: pd.DataFrame, tf: str, pair: str) -> go.Figure:
     fig = go.Figure()
     if df.empty:
@@ -127,9 +207,9 @@ def _bias_emoji(bias: str | None) -> str:
 def _bias_label(bias: str | None) -> str:
     return {"bull": "Bull", "bear": "Bear"}.get(bias or "", "—")
 
-
 def build_main_chart(
     df: pd.DataFrame, signals: dict, params: dict, pair: str, timeframe: str,
+    liquidity: dict | None = None,
 ) -> go.Figure:
     fig = go.Figure()
     if df.empty:
@@ -262,6 +342,60 @@ def build_main_chart(
         annotation_text="Premium", annotation_position="top left",
     )
 
+    # --- Liquidity Pools (EQH / EQL) ---------------------------------------
+    # Cap the visible pool count so the chart stays responsive on the
+    # full dataset. The backtester and regime engine still see the full
+    # pool list; this only affects the visual overlay.
+    POOL_CAP = 40
+    pools = (liquidity or {}).get("pools", []) if liquidity else []
+    pools = pools[-POOL_CAP:] if pools else []
+    last_ts = df.index[-1]
+    if pools:
+        for pool in pools:
+            activation_ts = pool["activation_ts"]
+            side = pool["side"]
+            level_low = pool["level_min"]
+            level_high = pool["level_max"]
+            color = (
+                "rgba(0, 200, 200, 0.20)" if side == "high"
+                else "rgba(200, 0, 200, 0.20)"
+            )
+            edge = (
+                "rgba(0, 200, 200, 0.85)" if side == "high"
+                else "rgba(200, 0, 200, 0.85)"
+            )
+            fig.add_shape(
+                type="rect",
+                x0=activation_ts, x1=last_ts,
+                y0=level_low, y1=level_high,
+                fillcolor=color, line=dict(color=edge, width=1),
+                layer="below",
+            )
+        sweep_bull_x, sweep_bull_y, sweep_bear_x, sweep_bear_y = [], [], [], []
+        for pool in pools:
+            if not pool["swept"] or pool["sweep_ts"] is None:
+                continue
+            ts = pool["sweep_ts"]
+            price = pool["level_mean"]
+            if pool["side"] == "high":
+                sweep_bull_x.append(ts); sweep_bull_y.append(price)
+            else:
+                sweep_bear_x.append(ts); sweep_bear_y.append(price)
+        if sweep_bull_x:
+            fig.add_trace(go.Scatter(
+                x=sweep_bull_x, y=sweep_bull_y, mode="markers",
+                marker=dict(symbol="diamond", color="teal", size=10),
+                name="EQH Pool swept", showlegend=True,
+                hovertemplate="EQH sweep @ %{x}<br>level=%{y:.5f}<extra></extra>",
+            ))
+        if sweep_bear_x:
+            fig.add_trace(go.Scatter(
+                x=sweep_bear_x, y=sweep_bear_y, mode="markers",
+                marker=dict(symbol="diamond", color="purple", size=10),
+                name="EQL Pool swept", showlegend=True,
+                hovertemplate="EQL sweep @ %{x}<br>level=%{y:.5f}<extra></extra>",
+            ))
+
     fig.update_layout(
         title=f"{pair} {timeframe} — SMC overlays",
         xaxis_rangeslider_visible=False, height=620,
@@ -341,19 +475,10 @@ with st.sidebar:
             {"pct": 0.50, "r": 5.0},
             {"pct": 1.00, "r": 8.0},
         ),
-        "Aggressive (4R/7R/12R)": (
-            {"pct": 0.40, "r": 4.0},
-            {"pct": 0.50, "r": 7.0},
-            {"pct": 1.00, "r": 12.0},
-        ),
     }
-    tp_profile = st.selectbox(
-        "TP profile",
-        list(tp_profiles.keys()),
-        index=0,
-        help="Partial TP ladder. Higher R targets = lower winrate, higher avg R.",
-    )
+    tp_profile = st.selectbox("TP profile", list(tp_profiles.keys()), index=0)
     partial_tp = list(tp_profiles[tp_profile])
+
     displacement_thr = st.slider("Displacement ATR mult", 1.0, 3.0,
                                  float(strat_cfg.get("displacement_atr_mult", 1.5)),
                                  help=RULE_TOOLTIPS["displacement_thr"])
@@ -376,18 +501,16 @@ with st.sidebar:
             "any = trade theo bất kỳ TF nào (nới lỏng)."
         ),
     )
-    # Plan 14: regime-aware breaker overlay. "off" = baseline; "on" =
-    # always include breaker zones; "auto" = regime detection picks from
-    # data. EURUSD M15 2026 classifies as ranging despite bull bias, so
-    # "auto" matches "on" on this dataset.
+    # Auto regime is structure-aware: recent BOS/CHoCH/sweep densities decide
+    # whether breakers are trusted. Mixed stays conservative and keeps OB-classic.
     regime_mode = st.selectbox(
         "Regime mode (breakers)",
         ["off", "on", "auto"],
         index=0,
         help=(
             "off = baseline OB-classic only. on = always layer breaker "
-            "zones (Plan 13). auto = derive regime from data via "
-            "directional_move_ratio + choppiness (Plan 14)."
+            "zones. auto = use recent BOS/CHoCH/sweep structure to decide "
+            "whether breakers should participate."
         ),
     )
     promotion_lookback = st.slider(
@@ -444,6 +567,25 @@ elif verdict == "aligned_short":
 else:
     st.warning("⚠️ D và H4 không aligned → ĐỨNG NGOÀI (stand aside)")
 
+regime_state = _compute_regime_state(
+    pair,
+    str(start_date) if start_date else "",
+    str(end_date) if end_date else "",
+    swing_length,
+    displacement_thr,
+    sweep_buf,
+)
+
+if regime_state is None:
+    st.info("Regime auto: unavailable for the selected window.")
+else:
+    regime_cols = st.columns(4)
+    regime_cols[0].metric("Regime auto", regime_state.regime)
+    regime_cols[1].metric("Continuation", f"{regime_state.trend_strength:.2f}")
+    regime_cols[2].metric("Range pressure", f"{regime_state.choppiness:.2f}")
+    regime_cols[3].metric("Breaker weight", f"{regime_state.breaker_weight:.0%}")
+    st.caption(regime_state.explanation)
+
 # 4 mini charts in a row
 mini_cols = st.columns(4)
 for col, tf in zip(mini_cols, ["D", "H4", "H1", "M15"]):
@@ -476,6 +618,18 @@ signals = _compute_overlays(
     str(start_date) if start_date else "",
     str(end_date) if end_date else "",
     swing_length, displacement_thr, sweep_buf,
+)
+liquidity_overlays = _compute_liquidity_pools(
+    pair,
+    str(start_date) if start_date else "",
+    str(end_date) if end_date else "",
+    swing_length,
+)
+main_chart_params = {"pd_lookback": int(pd_lookback)}
+st.plotly_chart(
+    build_main_chart(main_df_view, signals, main_chart_params, pair, timeframe, liquidity_overlays),
+    use_container_width=True,
+    key=f"main_chart_{pair}_{timeframe}_{swing_length}",
 )
 st.subheader("Backtest Results")
 run_cfg = {

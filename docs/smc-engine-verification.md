@@ -38,13 +38,10 @@ Current engine + integration coverage:
 | `tests/test_smc_sweeps.py` | liquidity sweep detection |
 | `tests/test_smc_order_blocks.py` | BOS-activated OB lifecycle |
 | `tests/test_smc_fvg_context.py` | FVG lifecycle + context |
-| `tests/test_smc_breaker_blocks.py` | breaker causality oracle |
-| `tests/test_smc_ob_body_mode.py` | OB body-mode geometry transform |
-| `tests/test_smc_regime.py` | regime heuristic |
-| `tests/test_backtest.py` | baseline characterization backtest |
 | `tests/test_backtest_breakers.py` | breaker + regime integration into backtester |
+| `tests/test_smc_liquidity_pools.py` | EQH/EQL clustering + causal pool sweep lifecycle |
 
-Current full suite: **197 passed**.
+Current full suite: **209 passed**.
 
 ## Smoke Invariants
 
@@ -61,8 +58,8 @@ Stable baseline:
 Meaning:
 
 - default path still matches the shipped Phase 12 baseline
-- Plan 13 / 14 additions do not mutate baseline behavior when their toggles
-  are left at defaults
+- Plan 13 / 14 additions and the Regime V2 refinement do not mutate baseline
+  behavior when toggles stay at defaults
 
 ## Characterization Results
 
@@ -70,29 +67,30 @@ Meaning:
 
 On EURUSD M15 2026:
 
-| Mode | Trades | WR | PF | Total R | Max DD |
-|---|---|---|---|---|---|
-| `regime_mode="off"` | 32 | 81.2% | 8.29 | 60.5 | 1.17% |
-| `regime_mode="on"` | 21 | 57.1% | 2.75 | 27.3 | 3.23% |
-| `regime_mode="auto"` | 21 | 57.1% | 2.75 | 27.3 | 3.23% |
+| Mode | Trades | WR | PF | Notes |
+|---|---|---|---|---|
+| `regime_mode="off"` | 32 | 81.2% | 8.29 | baseline OB-classic |
+| `regime_mode="on"` | 21 | 57.1% | 2.7475 | forced breakers |
+| `regime_mode="auto"` | 32 | 81.2% | 8.29 | still matches `off` |
 
 Interpretation:
 
-- breakers are active and being consumed by the backtester when enabled
-- they degrade edge on this specific dataset
-- the current `auto` regime heuristic classifies the dataset as `ranging`, so
-  it currently behaves the same as `on`
+- breakers remain active and consumed when forced `on`
+- they still degrade edge on this specific dataset (21 trades, PF 2.7475)
+- Regime V2 still classifies the shipped path as `mixed` with `breaker_weight=0`
+- Phase 02 adds EQH/EQL density to the explanation and ranging-pressure score,
+  but it does not destabilize the shipped baseline path
 
-### Breaker activation count
+### Liquidity pool characterization
 
 On EURUSD M15 2026:
 
-- 59 breaker events detected
-- monthly spread: Jan 9, Feb 4, Mar 7, Apr 10, May 8, Jun 8, Jul 11, Aug 2
-- direction mix: 37 bullish, 22 bearish
+- 495 confirmed EQH/EQL liquidity pools detected
+- recent-window density seen by `detect_regime`: about **7.2 / 100 bars**
+- app auto explanation now includes `EQH/EQL pools ... /100`
 
-This proves the breaker layer is wired correctly even though it is not
-currently beneficial for this market regime.
+This proves the pool layer is wired into regime reasoning without changing the
+default trade set on the shipped dataset.
 
 ## What Is Verified vs What Is Still Heuristic
 
@@ -105,15 +103,17 @@ currently beneficial for this market regime.
 - deterministic replay on the shipped dataset
 - breaker promotion causality (`invalidation < CHoCH`)
 - body-mode geometry transform
+- EQH/EQL confirmation at the second matching swing
+- pool sweep semantics require reclaim, not breakout continuation
+- pool extensions are causal: later members do not rewrite earlier sweep outcomes
 - backtester integration guards (`off` preserves baseline)
 
 ### Still heuristic / research-grade
 
-- regime auto-switching
 - whether breakers improve edge on other pairs or other years
 - whether body-only OB zones outperform full-range OB zones on live data
-- whether `auto` should incorporate structure frequency (BOS/CHoCH density),
-  ATR percentile, session context, or volume
+- whether `auto` ranging calls transfer beyond the shipped EURUSD window
+- whether session context or volume should refine the structure densities
 
 ## Recommended Operational Defaults
 
@@ -124,5 +124,5 @@ For the current shipped EURUSD M15 2026 dataset:
 - `promotion_lookback_bars = 50`
 - classic OB entries only
 
-Use `regime_mode = "on"` or `"auto"` only for research until the regime
-heuristic is improved.
+Use `regime_mode = "on"` only for research. Prefer `off` or `auto` on the
+shipped EURUSD path; both currently keep the baseline OB-only trade set.

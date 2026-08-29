@@ -170,6 +170,12 @@ def run_backtest(
     strat_cfg = config.get("strategy", {}) if isinstance(config.get("strategy"), dict) else {}
     rr_target = float(strat_cfg.get("rr_target", config.get("rr_target", 2.5)))
     sl_atr_buffer = float(strat_cfg.get("sl_atr_buffer", config.get("sl_atr_buffer", 0.2)))
+    displacement_atr_mult = float(
+        strat_cfg.get("displacement_atr_mult", config.get("displacement_atr_mult", 1.5))
+    )
+    sweep_atr_buffer = float(
+        strat_cfg.get("sweep_atr_buffer", config.get("sweep_atr_buffer", 0.05))
+    )
     min_confluence = int(
         strat_cfg.get("min_confluence_score", config.get("min_confluence_score", 4))
     )
@@ -281,8 +287,8 @@ def run_backtest(
     # Build all engine outputs once for the full M15 frame.
     detector = SMCSignals(
         swing_length=swing_length,
-        displacement_atr_mult=config.get("displacement_atr_mult", 1.5),
-        sweep_atr_buffer=config.get("sweep_atr_buffer", 0.05),
+        displacement_atr_mult=displacement_atr_mult,
+        sweep_atr_buffer=sweep_atr_buffer,
     )
     signals_full = detector.get_signals(df_m15, skip_mitigation=True)
 
@@ -302,27 +308,54 @@ def run_backtest(
                 sweep_bull_series.loc[ts] = True
             else:
                 sweep_bear_series.loc[ts] = True
-
-    # Walk the full M15 history once with the engine so we can query OB/FVG as-of.
+    pool_bull_near_series = pd.Series(0, index=df_m15.index, dtype=int)
+    pool_bear_near_series = pd.Series(0, index=df_m15.index, dtype=int)
     from smc_engine.context import compute_dealing_range_context, is_in_pd_zone as _pd_is_in
-    from smc_engine.order_blocks import detect_order_blocks
     from smc_engine.displacement import detect_range_expansion
     from smc_engine.fvg import detect_fvgs
+    from smc_engine.liquidity_pools import detect_liquidity_pools
+    from smc_engine.order_blocks import detect_order_blocks
+    from smc_engine.regime import detect_regime
     from smc_engine.structure import detect_structure
+    from smc_engine.sweeps import detect_sweeps
     from smc_engine.swings import detect_swings
 
     left = right = max(2, swing_length // 2)
     swings_m15 = detect_swings(df_m15, left=left, right=right)
-    expansion_m15 = detect_range_expansion(df_m15, atr_all, multiplier=config.get("displacement_atr_mult", 1.5))
+    expansion_m15 = detect_range_expansion(df_m15, atr_all, multiplier=displacement_atr_mult)
     structure_m15 = detect_structure(df_m15, swings_m15, atr=atr_all)
+    sweeps_m15 = detect_sweeps(
+        df_m15,
+        swings_m15,
+        atr_all,
+        atr_buffer=sweep_atr_buffer,
+        range_expansion_mult=displacement_atr_mult,
+    )
     order_blocks_full = detect_order_blocks(df_m15, structure_m15, expansion_m15)
     fvgs_full = detect_fvgs(df_m15)
-    # Plan 14 regime-aware: detect regime from data when auto mode. Plan 13
-    # breaker layer is pure-function post-process; lazy import keeps the
-    # off-mode path dependency-free for the baseline.
+    allow_breakers = regime_mode == "on"
+    if regime_mode == "auto":
+        regime = detect_regime(
+            df_m15,
+            structure=structure_m15,
+            sweeps=sweeps_m15,
+            swing_left=left,
+            swing_right=right,
+            sweep_atr_buffer=sweep_atr_buffer,
+            displacement_atr_mult=displacement_atr_mult,
+        )
+        allow_breakers = regime.breaker_weight > 0.0
+    liquidity_pools = detect_liquidity_pools(df_m15, swings_m15, atr_all)
+    for pool in liquidity_pools.events:
+        if pool.activation_pos >= len(df_m15):
+            continue
+        start = max(pool.activation_pos, 0)
+        if pool.side == "high":
+            pool_bull_near_series.iloc[start:] += 1
+        else:
+            pool_bear_near_series.iloc[start:] += 1
     breakers_list: list = []
-    breaker_threshold: float = 1.0  # when regime_mode="on", all breakers accepted
-    if regime_mode != "off":
+    if regime_mode != "off" and allow_breakers:
         from smc_engine.breaker_blocks import promote_breakers_with_events
         breakers_list, _breaker_diags = promote_breakers_with_events(
             order_blocks_full,
@@ -330,15 +363,17 @@ def run_backtest(
             df_m15.index,
             promotion_lookback_bars=promotion_lookback_bars,
         )
-        if regime_mode == "auto":
-            from smc_engine.regime import detect_regime
-            regime = detect_regime(df_m15)
-            # Threshold on the deterministic hash of the breaker ob_id.
-            # breaker_weight=1.0 -> always include; =0.0 -> never include.
-            # Mid values select a deterministic subset for reproducibility.
-            breaker_threshold = max(0.0, min(1.0, regime.breaker_weight))
     context_m15 = compute_dealing_range_context(df_m15, structure_m15)
     pd_zone_engine_series = context_m15.zone.reindex(df_m15.index).fillna("neutral")
+    liquidity_pools = detect_liquidity_pools(df_m15, swings_m15, atr_all)
+    for pool in liquidity_pools.events:
+        if pool.activation_pos >= len(df_m15):
+            continue
+        start = max(pool.activation_pos, 0)
+        if pool.side == "high":
+            pool_bull_near_series.iloc[start:] += 1
+        else:
+            pool_bear_near_series.iloc[start:] += 1
 
     # Guard
     guard = FTMOGuard(
@@ -375,10 +410,14 @@ def run_backtest(
         sweep_bull = bool(sweep_bull_series.iloc[i]) if i < len(sweep_bull_series) else False
         sweep_bear = bool(sweep_bear_series.iloc[i]) if i < len(sweep_bear_series) else False
         sweep_clean = sweep_bull or sweep_bear or displacement
+        pool_bull_near = int(pool_bull_near_series.iloc[i]) if i < len(pool_bull_near_series) else 0
+        pool_bear_near = int(pool_bear_near_series.iloc[i]) if i < len(pool_bear_near_series) else 0
+        near_high_pool = pool_bull_near > 0
+        near_low_pool = pool_bear_near > 0
+        near_pool = near_high_pool or near_low_pool
 
         pd_zone_now = pd_zone_engine_series.iloc[i] if i < len(pd_zone_engine_series) else "neutral"
         atr_now = float(atr_all.iloc[i]) if i < len(atr_all) else 0.0
-
         # Direction. Engine bias enum: bull/bear/neutral.
         # bias_mode:
         #   strict  -> legacy: aligned_bias from D+H4 must agree.
@@ -411,7 +450,7 @@ def run_backtest(
             trade_dir = None
         bias_aligned = trade_dir is not None
         in_pd_zone = _pd_is_in(str(pd_zone_now), trade_dir or "long")
-
+        target = None
         ob_zones_now = []
         if trade_dir in ("long", "short"):
             target = "bullish" if trade_dir == "long" else "bearish"
@@ -427,25 +466,22 @@ def run_backtest(
                     "top": float(ev.top),
                     "bottom": float(ev.bottom),
                 })
-            # Plan 14 regime-aware: append active breakers in the same
-            # direction. A breaker is entry-eligible when its
-            # role_flip_timestamp is at or before the current bar. Under
-            # regime_mode="auto", a deterministic hash of the breaker
-            # ``ob_id`` decides whether this regime includes the breaker
-            # (mixing OB-classic and breaker entries by regime weight).
+            # EQH/EQL proximity check: longs require a nearby low-side pool,
+            # shorts require a nearby high-side pool. Falls back to permissive
+            # when no pools are nearby so the baseline count is unchanged.
+            if (
+                (trade_dir == "long" and not near_low_pool)
+                or (trade_dir == "short" and not near_high_pool)
+            ):
+                entry_allowed = False
+            # Auto mode is regime-gated, not hash-sampled: breakers only
+            # participate when the recent structure is clearly ranging.
             if breakers_list:
                 for br in breakers_list:
                     if br.direction != target:
                         continue
                     if ts < br.role_flip_timestamp:
                         continue
-                    if breaker_threshold < 1.0:
-                        # Deterministic inclusion: hash(ob_id) / LARGE in [0,1)
-                        # <= threshold -> include.
-                        _hash = (br.ob_id * 2654435761) & 0xFFFFFFFF
-                        _bucket = _hash / 0xFFFFFFFF
-                        if _bucket > breaker_threshold:
-                            continue
                     ob_zones_now.append({
                         "direction": br.direction,
                         "top": float(br.top),

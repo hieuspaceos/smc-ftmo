@@ -157,12 +157,27 @@ Notes:
 - `full` = identity
 - `body` = zone from `max(open, close)` / `min(open, close)` at origin candle
 
+### `liquidity_pools.py`
+
+Important exports:
+
+- `LiquidityPoolEvent`
+- `LiquidityPoolResult`
+- `detect_liquidity_pools(df, swings, atr)`
+
+Notes:
+
+- fixed internal tolerance: `0.15 × ATR`
+- pool confirms at second matching swing activation
+- sweep requires wick through the pool plus reclaim close back inside
+- later members extend pool boundaries only from their own activation bar forward
+
 ### `regime.py`
 
 Important exports:
 
 - `RegimeState`
-- `detect_regime(df, trend_lookback=14, chop_lookback=14)`
+- `detect_regime(df, structure=None, sweeps=None, liquidity_pools=None, ...)`
 
 Internal metrics:
 

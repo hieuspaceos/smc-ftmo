@@ -1,43 +1,60 @@
 # Phase 01 — Regime Detection V2
 
+**Status:** completed
+
 ## Why this phase exists
 
-Current `regime_mode=auto` uses price-path metrics only:
+Current `regime_mode=auto` used price-path metrics only:
 
 - directional move ratio
 - choppiness
 
-That is too weak for SMC because price can trend structurally while still
-looking choppy candle-to-candle.
+That was too weak for SMC because price can trend structurally while still
+looking choppy candle-to-candle. On shipped EURUSD M15, auto mis-classified as
+`ranging` and behaved like forced `on`.
 
-## Intended refinement
+## Implemented refinement
 
-Replace pure price-path classification with a structure-aware classifier using:
+Replaced pure price-path classification with a structure-aware classifier in
+`src/smc_engine/regime.py` using:
 
-- BOS density per lookback window
+- BOS density per lookback window (up to 600 bars)
 - CHoCH density per lookback window
 - sweep density per lookback window
-- optional ATR percentile internally
+- continuation vs ranging-pressure blend → `trending` / `ranging` / `mixed`
+- sparse-structure fallback to the older price-path heuristic (still conservative)
 
-## Required outputs
+## Required outputs (delivered)
 
-The regime layer must explain itself in plain language:
+| Label | Structural read | Weights |
+|---|---|---|
+| `trending` | many same-direction BOS, low CHoCH/range pressure | OB 1.0 / breaker 0.0 |
+| `ranging` | frequent CHoCH and sweeps, weak directional persistence | OB 0.0 / breaker 1.0 |
+| `mixed` | neither clean trend nor clean range | OB 1.0 / breaker 0.0 |
 
-- `trending`: many same-direction BOS, low CHoCH
-- `ranging`: frequent CHoCH and sweeps, poor directional persistence
-- `mixed`: neither clean trend nor clean range
+`RegimeState` also exposes `bos_density`, `choch_density`, `sweep_density`,
+`dominant_direction`, and a plain-language `explanation`.
 
-## Constraints
+## Constraints held
 
-- do not add more than one new **engine** setting unless absolutely necessary
-- preserve `regime_mode=off`
-- preserve smoke checksum on baseline path
-- do not add a second heuristic layer on top of the current heuristic; replace it cleanly
-- UI may expose regime result / mode selection, but the core logic must stay narrow
+- no new engine settings beyond existing `regime_mode`
+- `regime_mode=off` preserved
+- smoke checksum on baseline path preserved
+- replaced the old auto heuristic cleanly rather than stacking a second layer
+- UI still only selects off/on/auto
 
-## Acceptance
+## Acceptance — met
 
-- `auto` no longer equals `on` on the shipped EURUSD dataset unless the new
-  evidence really says so
-- `tests/test_smc_regime.py` is extended, not weakened
-- docs can explain the classifier in one short table
+- `auto` no longer equals `on` on shipped EURUSD M15
+  - `detect_regime` → `mixed`, `breaker_weight=0`
+  - auto = **32 trades** (matches off)
+  - forced on = **21 trades**, PF **2.7475**
+- `tests/test_smc_regime.py` extended; full suite **209 passed**
+- docs explain the classifier in a short table (`docs/smc-engine-extensions.md`)
+
+## Verification anchors
+
+- full suite: 209 passed
+- smoke checksum:
+  `4d6a95cff910bbcbe857af34d07f0289529d514177fb5c607176c38eb565cb0a`
+- Phase 02 later added EQH/EQL density on top without changing these baseline results

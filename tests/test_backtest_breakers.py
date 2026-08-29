@@ -86,16 +86,19 @@ class TestBacktestBreakerIntegration:
         assert len(breaker_trades) != len(baseline_trades)
 
     def test_auto_mode_uses_regime_detection(self):
-        """``regime_mode="auto"`` derives regime from data. On EURUSD M15 2026
-        the regime detector classifies as ``ranging`` (choppy path despite
-        overall bullish bias). Breakers get partial weight — trade count
-        may differ from baseline.
+        """Auto mode should stay distinct from forced breaker mode on the
+        shipped EURUSD dataset.
         """
-        auto_trades, _ = run_backtest(
+        baseline_trades, _ = run_backtest(pair="EURUSD", config=BASE_CONFIG)
+        auto_trades, auto_eq = run_backtest(
             pair="EURUSD", config=_with_regime(BASE_CONFIG, "auto")
         )
-        # Auto path engages breakers with partial weight; trades >= 0.
-        assert len(auto_trades) >= 0
+        on_trades, on_eq = run_backtest(
+            pair="EURUSD", config=_with_regime(BASE_CONFIG, "on")
+        )
+        assert len(auto_trades) != len(on_trades)
+        assert len(auto_trades) == len(baseline_trades)
+        assert compute_metrics(auto_trades, auto_eq)["profit_factor"] >= compute_metrics(on_trades, on_eq)["profit_factor"]
 
 
     def test_invalid_regime_mode_raises(self):
@@ -120,3 +123,20 @@ class TestBacktestBreakerIntegration:
             assert t["side"] in ("long", "short")
             assert t.get("bias_d") in ("bull", "bear", "neutral")
             assert t.get("bias_h4") in ("bull", "bear", "neutral")
+
+    def test_strategy_level_regime_params_override_top_level(self):
+        cfg = {
+            **BASE_CONFIG,
+            "displacement_atr_mult": 9.9,
+            "sweep_atr_buffer": 0.9,
+            "strategy": {
+                **BASE_CONFIG["strategy"],
+                "regime_mode": "auto",
+                "displacement_atr_mult": 1.5,
+                "sweep_atr_buffer": 0.05,
+            },
+        }
+        trades, eq = run_backtest(pair="EURUSD", config=cfg)
+        metrics = compute_metrics(trades, eq)
+        assert len(trades) == 32
+        assert metrics["profit_factor"] == pytest.approx(8.285761610711116)

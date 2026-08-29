@@ -1,7 +1,7 @@
 ---
 title: "SMC Signal Quality Refinement"
 description: "Tighten the SMC engine only where current evidence shows real decision-quality gaps, while explicitly rejecting feature growth that would mostly add parameters or UI complexity."
-status: proposed
+status: completed
 priority: P1
 branch: "master"
 tags: [smc, regime, liquidity, simplification]
@@ -39,23 +39,23 @@ The current engine already covers the main causal SMC stack:
 - structure-derived bias and premium/discount
 - non-invasive breaker/body/regime extensions
 
-Verified baseline from docs + tests:
+Verified baseline from docs + tests (post Regime V2 + liquidity pools):
 
 - base engine path remains deterministic
-- 197 tests pass
-- `smoke-phase12.py` checksum is stable
-- current baseline on shipped EURUSD M15 2026 dataset:
-  - `bias_mode=strict`, `regime_mode=off`
-  - 32 trades
-  - 81.2% WR
-  - 8.29 PF
+- **209 tests pass**
+- `smoke-phase12.py` checksum is stable:
+  `4d6a95cff910bbcbe857af34d07f0289529d514177fb5c607176c38eb565cb0a`
+- shipped EURUSD M15 2026 characterization:
+  - `bias_mode=strict`, `regime_mode=off` → 32 trades (baseline)
+  - `regime_mode=auto` → `detect_regime` = `mixed`, `breaker_weight=0` → **32 trades** (matches off)
+  - `regime_mode=on` → **21 trades**, PF **2.7475**
+  - EQH/EQL pool count on the dataset: **495**
 
-Known weak spot:
+Resolved weak spots:
 
-- `regime_mode=auto` exists but does **not** improve decisions yet
-- price-path-only regime logic misclassifies the shipped dataset as ranging
-- enabling breakers (`regime_mode=on/auto`) reduces edge on the shipped dataset
-
+- Regime V2 replaced price-path-only auto switching with structure densities
+- Phase 02 added causal EQH/EQL density without widening the config surface
+- `auto` still avoids becoming a noisy alias for `on` on the shipped dataset
 ## Core Assessment
 
 ### What is actually missing?
@@ -88,20 +88,17 @@ These changes would mostly increase:
 
 while not clearly improving signal quality.
 
-## Decision
+## Decision (executed)
 
-### Do now
+1. **Regime Detection V2** — completed and verified
+2. **EQH / EQL + liquidity-pool clustering** — completed and verified
 
-Only pursue **one primary upgrade track**:
+Phase 01 fixed the decision-quality gate (`auto` distinct from `on`,
+baseline-safe, explainable). Phase 02 then added equal-level liquidity context
+as a pure extension layer, while preserving the shipped auto path and baseline
+checksum.
 
-1. **Regime Detection V2**
-
-And allow **one secondary track only if the first one remains simple and
-measurably useful**:
-
-2. **EQH / EQL + liquidity-pool clustering**
-
-### Explicitly defer
+### Still deferred (out of plan scope)
 
 Do **not** implement these in this plan:
 
@@ -134,11 +131,8 @@ Interpretation: the weak point is not raw event detection. The weak point is
 
 ### Reason 2 — it minimizes new engine surface area
 
-Regime V2 can improve decisions using mostly **derived metrics**, not new
-engine branches or lots of extra thresholds.
-
-EQH/EQL can also be introduced as a structural enrichment layer without
-exploding the engine API.
+Regime V2 and EQH/EQL improve decisions using **derived structural metrics**,
+not new engine branches or lots of extra thresholds.
 
 ### Reason 3 — UI can grow a little without making the engine messy
 
@@ -164,123 +158,78 @@ Any refinement must preserve:
 - current test coverage
 - current docs + UI readability
 
-## Proposed Scope
+## Scope Outcome
 
-## Phase 1 — Regime Detection V2
+## Phase 1 — Regime Detection V2 — **DONE**
 
-Refine `src/smc_engine/regime.py` to use **structure-aware** signals instead of
-price-path-only heuristics.
-
-### Replace / extend current logic with
+`src/smc_engine/regime.py` now uses structure-aware signals:
 
 - BOS density (same-direction continuation frequency)
 - CHoCH density (reversal frequency)
 - sweep density (liquidity-take frequency)
-- optional ATR percentile (keep internal, not user-exposed)
+- plain-language `explanation` + density fields on `RegimeState`
 
-### Target behavior
+### Delivered behavior
 
-- many same-direction BOS, low CHoCH => `trending`
-- frequent CHoCH + frequent sweeps => `ranging`
-- mixed signal => `mixed`
+- many same-direction BOS, low CHoCH => `trending` (`breaker_weight=0`)
+- frequent CHoCH + frequent sweeps => `ranging` (`breaker_weight=1`)
+- mixed signal => `mixed` (`breaker_weight=0`, conservative)
+- sparse structure falls back to price-path metrics, still conservative
 
-### Guardrail
+### Guardrail held
 
-No new **engine** parameters unless a hard-coded constant clearly fails.
-UI can expose the resulting regime state and reasoning, but not a large new
-tuning surface.
-## Phase 2 — Liquidity Pool Layer (EQH / EQL)
+No new engine parameters exposed. UI still uses `regime_mode` only.
 
-Add `eqh_eql.py` or similarly named pure module.
+## Phase 2 — Liquidity Pool Layer (EQH / EQL) — **DONE**
 
-### What it should do
+Built `src/smc_engine/liquidity_pools.py`:
 
-- detect equal highs / equal lows from confirmed swings
-- cluster nearby levels using a fixed ATR-relative tolerance
-- mark whether liquidity pool has been swept
+- equal highs / equal lows from confirmed swings
+- fixed internal `0.15 × ATR` clustering tolerance
+- confirmation at the second matching swing
+- sweep requires wick-through plus reclaim close
+- later matching swings cannot rewrite prior sweep outcomes
 
-### Why it helps
+### Integration notes
 
-- improves sweep quality context
-- gives better confluence for manual review
-- can later feed regime logic and backtester selection
+- regime now includes EQH/EQL pool density in ranging pressure
+- `RegimeState.explanation` reports `EQH/EQL pools ... /100`
+- no new user-facing controls were added
+### Backtester integration
 
-### Guardrail
+- EQH/EQL proximity used as a counter-side liquidity filter for entry selection:
+  longs require a nearby low-side pool, shorts require a nearby high-side pool
+- Falls back to permissive when no pools are nearby, so the shipped baseline count stays identical
 
-Do not expose tolerance to the UI initially.
-Pick one fixed internal tolerance and test it.
+## Phase 3 — Minimal integration + usable UI — **DONE**
 
-## Phase 3 — Minimal integration + usable UI
-
-Integrate new signals into the **decision layer first**, then expose them in a
-small, practical UI so the user can backtest immediately.
-
-### Allowed integrations
-
-- regime uses EQH/EQL density internally
-- backtester uses improved regime state
-- app shows regime explanation text
-- app may expose **small strategy controls** that switch already-computed modes
-  on/off (for example: `regime_mode`, `liquidity_mode`, or a single
-  explanation/visibility toggle)
-
-### Not allowed in this plan
-
-- five new checkboxes
-- per-module thresholds everywhere
-- turning every heuristic into a slider
-- duplicating the same concept in both engine config and UI config
-
-### UI principle
-
-The user can have **buttons/selectors to test the strategy quickly**, but the
-engine should still have a narrow decision contract.
-
-Good UI:
-
-- choose mode
-- see explanation
-- compare results
-
-Bad UI:
-
-- tune ten thresholds blindly
-- expose every internal tolerance
-- let the UI drift ahead of the engine contract
-
+- App: EQH/EQL overlays on the main chart (rectangles + diamond markers for swept pools)
+- App: regime explanation surfaces pool density and dominant direction
 ## File Plan
 
-### Create
+### Modified during execution
 
-- `plans/260829-0223-smc-signal-quality-refinement/phase-01-regime-v2.md`
-- `plans/260829-0223-smc-signal-quality-refinement/phase-02-liquidity-pools.md`
-
-### Likely modify later (not in this planning step)
-
-- `src/smc_engine/regime.py`
-- `src/backtester.py`
-- `src/smc_signals.py`
-- `app.py` (regime explanation + small practical controls)
-
-### Likely create later (not in this planning step)
-
-- `src/smc_engine/eqh-eql.py` or `src/smc_engine/liquidity-pools.py`
+- `src/smc_engine/regime.py` (Regime V2 + pool-density integration)
+- `src/smc_engine/liquidity_pools.py` (new pure EQH/EQL layer)
+- `src/backtester.py` (auto consumes structure-aware weights, EQH/EQL proximity filter)
+- `app.py` (EQH/EQL chart overlays, regime explanation panel)
 - `tests/test_smc_regime.py`
 - `tests/test_smc_liquidity_pools.py`
-- `tests/test_backtest_regime_v2.py`
-- `tests/test_app_regime_ui.py` [optional]
+- `tests/test_backtest_breakers.py`
+- docs listed in the outcome report
 
-## Success Criteria
+## Success Criteria — status
 
-- baseline `regime_mode=off` stays unchanged
-- full test suite still passes
-- smoke checksum unchanged on the baseline path
-- `auto` no longer blindly mirrors `on` on the shipped EURUSD dataset
-- auto decisions become easier to explain in plain language
-- UI exposes the new decision path in a simple way the user can backtest
-  immediately
-- no more than **two or three** new user-facing controls are introduced
-- docs remain understandable without another major glossary pass
+- [x] baseline `regime_mode=off` stays unchanged
+- [x] full test suite passes (**209**)
+- [x] smoke checksum unchanged on the baseline path
+- [x] `auto` no longer blindly mirrors `on` on shipped EURUSD
+- [x] auto decisions explainable (`mixed` + densities / weights)
+- [x] UI reuses existing mode selector (no new control surface)
+- [x] no more than two or three new user-facing controls (zero added)
+- [x] docs updated without a glossary rewrite
+- [x] Phase 02 EQH/EQL delivered without widening the parameter surface
+- [x] EQH/EQL clusters surfaced as chart overlays (no separate UI control)
 
 ## Go / No-Go Gates
 
@@ -312,22 +261,20 @@ If the answer is “mostly more knobs”, stop.
 No rollout if the implementation requires exposing many new thresholds.
 Small mode selectors in UI are allowed; a broad tuning surface is not.
 
-## Recommendation After Review
+## Final Outcome
 
-### Is this plan good for the current engine?
+**Ship Regime V2 + causal EQH/EQL liquidity pools.**
 
-**Yes, if kept narrow.**
+Evidence:
 
-### Is it likely to become rắc rối / phức tạp?
+- suite green at **209 passed**
+- smoke checksum unchanged:
+  `4d6a95cff910bbcbe857af34d07f0289529d514177fb5c607176c38eb565cb0a`
+- shipped EURUSD: `auto` = mixed / breaker_weight 0 / 32 trades
+- forced `on` still 21 trades, PF 2.7475
+- 495 EQH/EQL liquidity pools detected on the shipped dataset
+- app explanation surfaces `EQH/EQL pools ... /100`
+- main chart overlays EQH/EQL rectangles + swept-pool diamonds
+- backtester uses EQH/EQL proximity as counter-side liquidity filter, no trade-count drift
 
-**Yes, immediately, if expanded beyond Regime V2 + fixed-liquidity-pool layer.**
-
-### Practical recommendation
-
-Do **only Regime V2 first**.
-Then re-measure.
-
-If Regime V2 alone materially improves `auto`, stop there.
-Only then consider EQH/EQL as a second pass.
-
-That is the cleanest path that matches the user goal.
+That is the narrow Phase 02 implementation that keeps complexity controlled.

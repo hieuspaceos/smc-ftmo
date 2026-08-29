@@ -2,6 +2,7 @@
 status: active
 title: "System Architecture"
 created: "2026-08-27"
+updated: "2026-08-29"
 ---
 
 # System Architecture
@@ -14,7 +15,10 @@ The project has two architectural layers:
 
 Phase 12 replaced the third-party `smartmoneyconcepts` library with a custom
 causal engine. Phase 13 added non-invasive breaker/body extensions. Phase 14
-added regime-aware breaker switching in the backtester and UI.
+added regime-aware breaker switching in the backtester and UI. The signal-quality
+refinement upgraded `regime.py` to structure-aware Regime V2, then added
+`liquidity_pools.py` so EQH/EQL density can enrich auto-regime selection
+without widening the user config surface.
 
 ## Split Engine Docs
 
@@ -52,7 +56,8 @@ The engine is documented as a separate doc set:
 |---|---|
 | `src/smc_engine/breaker_blocks.py` | Pure breaker promotion layer over invalidated OBs |
 | `src/smc_engine/ob_body_mode.py` | Pure full/body geometry transform for OB zones |
-| `src/smc_engine/regime.py` | Lightweight regime heuristic for OB vs breaker switching |
+| `src/smc_engine/liquidity_pools.py` | Fixed-tolerance EQH/EQL clustering with causal sweep state |
+| `src/smc_engine/regime.py` | Structure-aware Regime V2 for OB vs breaker switching |
 
 ## API Guarantees
 
@@ -69,8 +74,11 @@ The engine is documented as a separate doc set:
 
 ## Verification
 
-- Current suite: **197 passed**
+- Current suite: **209 passed**
 - Baseline smoke checksum:
   `4d6a95cff910bbcbe857af34d07f0289529d514177fb5c607176c38eb565cb0a`
 - Breaker and body-mode layers are tested separately and do not mutate the
   default baseline when disabled
+- Regime V2 + liquidity pools keep `regime_mode=off` and smoke baseline
+  identical; on shipped EURUSD M15, `auto` still resolves to `mixed` with
+  `breaker_weight=0` (32 trades) while explanation now includes EQH/EQL density

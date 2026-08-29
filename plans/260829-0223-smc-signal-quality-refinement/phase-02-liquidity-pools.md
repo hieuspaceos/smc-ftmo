@@ -1,36 +1,43 @@
 # Phase 02 — EQH / EQL and Liquidity Pools
 
-## Why this phase is optional
+**Status:** completed
 
-This phase should happen only if Regime V2 alone is still not enough.
+## Why this phase exists
 
-EQH/EQL adds a real structural concept, but it also introduces another layer of
-logic. If Regime V2 already gives a usable `auto` mode, stop before this phase.
+Regime V2 already fixed the shipped auto-path bug, but EQH/EQL still adds a
+real structural concept for:
 
-## Scope
+- richer range-quality explanation
+- future sweep-quality research
+- cleaner equal-level liquidity context
 
-Add a small pure module that:
+## Implemented scope
+
+Built `src/smc_engine/liquidity_pools.py` as a small pure module that:
 
 - detects equal highs from confirmed swing highs
 - detects equal lows from confirmed swing lows
-- clusters them into liquidity pools using a fixed ATR-relative tolerance
-- marks whether a pool has already been swept
+- clusters them into liquidity pools with a fixed internal `0.15 × ATR` tolerance
+- confirms a pool at the **second** matching swing
+- marks a pool swept only when price takes the level **and closes back through it**
+- keeps sweep causality stable when later matching swings extend the pool
 
-## Intended use
+## Integration
 
-- enrich sweep quality
-- improve regime detection
-- help manual chart reading
+- `src/smc_engine/regime.py` now includes EQH/EQL pool density in ranging pressure
+- `RegimeState.explanation` reports `EQH/EQL pools ... /100`
+- no new user-facing knobs were added
 
-## Constraints
-
-- no raw threshold slider for tolerance in v1
-- fixed internal tolerance only
-- UI may show pool hits/sweeps, but should not expose many knobs
-- do not add another scoring system unless data proves it helps
-
-## Acceptance
+## Acceptance — met
 
 - layer is useful for explanation, not just extra drawing
-- no regression in current baseline path
-- if it adds complexity without improving auto decisions, drop it
+- baseline path did not regress
+- shipped EURUSD path stayed `mixed` / `breaker_weight=0`, so Phase 02 enriched context without destabilizing auto
+
+## Verification anchors
+
+- `tests/test_smc_liquidity_pools.py` added
+- focused pool/regime/backtester tests pass
+- full suite: **209 passed**
+- smoke checksum unchanged:
+  `4d6a95cff910bbcbe857af34d07f0289529d514177fb5c607176c38eb565cb0a`
