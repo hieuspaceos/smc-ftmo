@@ -652,6 +652,16 @@ with st.expander("Chart tips & shortcuts (Plotly)", expanded=False):
         """
     )
 _CHART_MAX_BARS_DEFAULT = 400
+main_df = data[timeframe]
+if start_date and end_date:
+    try:
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
+        main_df_view = main_df[(main_df.index >= start_ts) & (main_df.index < end_ts)]
+    except Exception:
+        main_df_view = main_df.tail(500)
+else:
+    main_df_view = main_df.tail(500)
 col_pool, col_bars = st.columns(2)
 with col_pool:
     pool_cap = st.slider(
