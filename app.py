@@ -425,6 +425,10 @@ def build_main_chart(
         title=f"{pair} {timeframe} — SMC overlays",
         xaxis_rangeslider_visible=True, height=900,
         autosize=True,
+        # The shipped EURUSD fixture is a downsampled M15 feed: ~28 bars per
+        # trading day with no weekend data. Skip those gaps so the chart
+        # reads as a continuous weekday sequence.
+        xaxis=dict(rangebreaks=[dict(bounds=["sat", "mon"])]),
         legend=dict(
             orientation="h",
             bordercolor="rgba(0,0,0,0.1)",
