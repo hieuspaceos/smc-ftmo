@@ -192,7 +192,7 @@ sequenceDiagram
     Bar->>Sw: confirm pivot if right-window complete
     Sw-->>St: activated swing level
     Bar->>St: check close break vs activated levels
-    St-->>OB: BOS / CHoCH event
+    St-->>OB: BOS only (CHoCH does not spawn OB)
     OB-->>BT: OB active from BOS bar
     Note over OB,BT: touch/invalidation start next bar only
     BT->>BT: score confluence at current timestamp

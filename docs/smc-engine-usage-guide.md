@@ -178,8 +178,8 @@ That is a property of the current dataset and regime, not a universal law.
 
 1. open app
 2. confirm multi-timeframe bias
-3. inspect M15 BOS / CHoCH / OB / sweep visually
-4. treat breaker overlays as optional context, not automatic truth
+3. inspect M15 BOS (creates OB), CHoCH (reversal / breaker-research), sweep, EQH/EQL
+4. take only active first-test OBs from BOS; treat FVG / liquidity / breaker as context
 5. log what the engine saw vs what you chose manually
 
 ## What Not To Do

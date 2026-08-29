@@ -72,8 +72,8 @@ Ví dụ:
 
 Tại sao phải có BOS?
 
-Vì OB trong engine này chỉ sinh ra sau một cú phá cấu trúc có ý nghĩa.
-Nếu không có BOS thì rất nhiều “OB” chỉ là vùng giá ngẫu nhiên.
+Vì OB trong engine này chỉ sinh ra sau **BOS** có displacement.
+CHoCH không tạo OB. Nếu không có BOS thì rất nhiều “OB” chỉ là vùng giá ngẫu nhiên.
 
 ### CHoCH
 
@@ -249,6 +249,7 @@ Nhưng hiện tại `auto` vẫn là heuristic, chưa nên tin tuyệt đối.
 Nếu muốn bản cực ngắn để mở chart làm ngay, đọc luôn:
 
 - [Checklist Trade Tay SMC](./smc-manual-trade-checklist.md)
+- [Rule Book Trade Tay](../journal/rule-book.md)
 
 ### Setup khuyến nghị để học
 
@@ -269,9 +270,9 @@ Lý do:
 1. Chọn pair và timeframe chính.
 2. Đọc bias D, H4, H1 trước khi nhìn M15.
 3. Xác định thị trường đang nghiêng `bull`, `bear`, hay `neutral`.
-4. Trên M15, tìm swing gần nhất rồi xem có BOS hay CHoCH thật không.
-5. Chỉ quan sát OB sinh ra sau BOS hợp lệ.
-6. Kiểm tra sweep và FVG như lớp xác nhận, không phải lý do duy nhất để vào.
+4. Trên M15, tìm swing gần nhất rồi xem có BOS hay CHoCH thật không (close-break).
+5. Chỉ lấy OB sinh ra sau **BOS** hợp lệ + displacement. CHoCH không đẻ OB.
+6. Kiểm tra sweep reclaim và FVG như lớp xác nhận, không phải lý do để vào.
 7. Xem giá đang ở `premium` hay `discount`.
 8. Chỉ chờ first touch nếu zone còn active.
 9. Không vào nếu signal chỉ đẹp trên 1 bar nhưng trái với HTF bias.
@@ -280,11 +281,11 @@ Lý do:
 
 Setup long thường hợp lý hơn khi:
 
-- D và H4 không bearish ngược hoàn toàn
-- cấu trúc M15 vừa có BOS bullish hoặc CHoCH bullish rõ
-- giá pullback về OB hoặc discount zone
-- có sweep downside hoặc displacement xác nhận trước đó
-- entry nằm trên first-touch bar hoặc bar ngay sau khi zone vẫn active
+- D và H4 cùng bull (`strict`)
+- cấu trúc M15 vừa có **BOS bullish** + displacement
+- giá pullback về OB bullish còn active, còn first-test, chưa invalidated
+- sweep downside reclaim hoặc FVG chỉ là xác nhận thêm
+- CHoCH bullish = đảo từ bear: bỏ OB cũ, chờ BOS bullish mới (breaker chỉ khi nghiên cứu)
 
 ### Liquidity pools dùng thế nào?
 
@@ -306,11 +307,11 @@ Khi trade tay:
 
 Setup short thường hợp lý hơn khi:
 
-- D và H4 không bullish ngược hoàn toàn
-- cấu trúc M15 vừa có BOS bearish hoặc CHoCH bearish rõ
-- giá hồi lên OB hoặc premium zone
-- có sweep upside hoặc displacement xác nhận trước đó
-- không vào khi zone đã bị invalidated
+- D và H4 cùng bear (`strict`)
+- cấu trúc M15 vừa có **BOS bearish** + displacement
+- giá hồi lên OB bearish còn active, còn first-test, chưa invalidated
+- sweep upside reclaim hoặc FVG chỉ là xác nhận thêm
+- CHoCH bearish = đảo từ bull: bỏ OB cũ, chờ BOS bearish mới (breaker chỉ khi nghiên cứu)
 
 ### Breaker dùng thế nào?
 
@@ -344,8 +345,9 @@ Mỗi trade nên ghi tối thiểu:
 
 - pair, timeframe, session
 - D / H4 / H1 / M15 bias
-- BOS hay CHoCH nào là trigger
-- OB / breaker / FVG / sweep nào đã dùng
+- BOS nào tạo OB; CHoCH nào chỉ là đảo chiều / breaker-research
+- OB còn sống hay đã break; first-test hay không
+- sweep / FVG / EQH / EQL / breaker nào đã dùng (không phải trigger)
 - entry lý do, stop lý do, target lý do
 - trade này đúng hay sai theo checklist
 

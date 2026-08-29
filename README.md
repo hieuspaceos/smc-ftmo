@@ -59,6 +59,8 @@ Mở browser: `http://localhost:8501`
 - [SMC Engine Usage Guide](docs/smc-engine-usage-guide.md)
 - [SMC Engine Verification](docs/smc-engine-verification.md)
 - [SMC Engine Vietnamese Guide](docs/smc-engine-vietnamese-guide.md)
+- [Checklist Trade Tay SMC](docs/smc-manual-trade-checklist.md)
+- [Rule Book Trade Tay](journal/rule-book.md)
 - [Project Roadmap](docs/project-roadmap.md)
 - [Code Standards](docs/code-standards.md)
 
