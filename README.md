@@ -6,6 +6,9 @@ Web app local với `Streamlit` + `Plotly` để học, backtest, và cải ti�
 
 - Core engine causal đã thay thế dependency `smartmoneyconcepts`.
 - Regime V2 + liquidity pools đã được ship dưới dạng extension không phá baseline.
+- Pine v6 indicator (`tradingview/smc-engine-indicator.pine`) ports the same
+  causal core cho TradingView với parity tooling (`scripts/export-pine-parity-fixtures.py`,
+  `scripts/compare-pine-parity.py`, `scripts/capture-frozen-feed.py`).
 - Phase 13 breaker/body upgrade đang ở trạng thái pending trong `plans/`.
 - Full suite hiện tại: `209 passed`.
 - Smoke baseline hiện tại: `32 trades`, `WR 81.25%`, `PF 8.29`, `Max DD 1.17%`.
@@ -58,6 +61,11 @@ Mở browser: `http://localhost:8501`
 - [SMC Engine Extensions](docs/smc-engine-extensions.md)
 - [SMC Engine Usage Guide](docs/smc-engine-usage-guide.md)
 - [SMC Engine Verification](docs/smc-engine-verification.md)
+- [SMC Engine TradingView Guide](docs/smc-engine-tradingview-guide.md)
+- [Rule Book → Pine Mapping](docs/rulebook-pine-mapping.md)
+- [Rule Book Verification Checklist](docs/rulebook-verification-checklist.md)
+- [Competitive Comparison](docs/competitive-comparison.md)
+- [Competitor Verification Checklist](docs/competitor-verification-checklist.md)
 - [SMC Engine Vietnamese Guide](docs/smc-engine-vietnamese-guide.md)
 - [Checklist Trade Tay SMC](docs/smc-manual-trade-checklist.md)
 - [Rule Book Trade Tay](journal/rule-book.md)

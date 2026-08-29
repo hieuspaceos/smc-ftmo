@@ -14,11 +14,11 @@ Phần verify này trả lời câu hỏi:
 > \"Mình có thể tin engine này tới mức nào?\"
 
 Câu trả lời thực tế:
-
+- Nhưng **không nên tin tuyệt đối** rằng backtest đẹp = sẽ kiếm tiền ngoài thị trường thật
+- Có thể chạy parity tooling để so sánh output Pine với Python engine
 - Có thể tin nó **đọc cấu trúc nhất quán**
 - Có thể tin nó **không nhìn tương lai**
 - Có thể tin nó **cho cùng input => cùng output**
-- Nhưng **không nên tin tuyệt đối** rằng backtest đẹp = sẽ kiếm tiền ngoài thị trường thật
 
 Nói dễ hiểu:
 
@@ -42,6 +42,28 @@ Current engine + integration coverage:
 | `tests/test_smc_liquidity_pools.py` | EQH/EQL clustering + causal pool sweep lifecycle |
 
 Current full suite: **209 passed**.
+
+## TradingView Indicator Parity
+
+The Pine v6 indicator (`tradingview/smc-engine-indicator.pine`) targets
+event parity on the same `FXPRO:EURUSD` M15 feed the Python engine was
+tuned on. Parity tooling:
+
+- `scripts/export-pine-parity-fixtures.py` — emits canonical rows
+  (per-bar state, events, diagnostics) from the current Python engine.
+- `scripts/compare-pine-parity.py` — diffs Python reference against
+  Pine-captured CSV with stable key columns and float tolerance.
+- `scripts/capture-frozen-feed.py` — captures a frozen TradingView
+  window (OHLC + reference + metadata + SHA-256) for the same dataset.
+
+Tests: `tests/test_pine_parity_tools.py` covers exporter determinism,
+comparator float tolerance, pool member-list equality, and the frozen
+feed capture smoke path. Current parity count: **8 passed** (was 6
+before Gate B and the capture CLI).
+
+See `docs/smc-engine-tradingview-guide.md` for the user guide and
+`plans/260829-1830-smc-engine-pinescript-indicator/reports/` for the
+slice-by-slice handoff.
 
 ## Smoke Invariants
 
