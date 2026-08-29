@@ -446,8 +446,10 @@ def build_main_chart(
     )
     fig.update_xaxes(fixedrange=False)
     fig.update_yaxes(fixedrange=False)
+    if not df.empty:
+        fig.update_xaxes(range=[df.index[0], df.index[-1]])
+        fig.update_yaxes(autorange=True)
     return fig
-
 
 def _plot_equity(equity_curve: list) -> go.Figure:
     if not equity_curve:
@@ -667,38 +669,32 @@ elif start_date and end_date:
         main_df_view = main_df.tail(500)
 else:
     main_df_view = main_df.tail(500)
-st.caption("Quick navigation")
-nav_cols = st.columns(5)
-if nav_cols[0].button("Last 2 days", key="nav_2d"):
-    st.session_state["nav_offset_days"] = 2
-    st.rerun()
-if nav_cols[1].button("Last 5 days", key="nav_5d"):
-    st.session_state["nav_offset_days"] = 5
-    st.rerun()
-if nav_cols[2].button("Last 2 weeks", key="nav_14d"):
-    st.session_state["nav_offset_days"] = 14
-    st.rerun()
-if nav_cols[3].button("Last month", key="nav_30d"):
-    st.session_state["nav_offset_days"] = 30
-    st.rerun()
-if nav_cols[4].button("Full range", key="nav_full"):
-    st.session_state["nav_offset_days"] = 0
-    st.rerun()
-main_df = data[timeframe]
 nav_offset = int(st.session_state.get("nav_offset_days", 0))
-if nav_offset > 0:
-    end_ts = main_df.index.max()
-    start_ts = end_ts - pd.Timedelta(days=nav_offset)
-    main_df_view = main_df[main_df.index >= start_ts]
-elif start_date and end_date:
-    try:
-        start_ts = pd.Timestamp(start_date)
-        end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
-        main_df_view = main_df[(main_df.index >= start_ts) & (main_df.index < end_ts)]
-    except Exception:
-        main_df_view = main_df.tail(500)
-else:
-    main_df_view = main_df.tail(500)
+nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
+with nav_col1:
+    st.caption("Quick navigation")
+with nav_col2:
+    nav_cols = st.columns(5)
+    if nav_cols[0].button("2 days", key="nav_2d", use_container_width=True):
+        st.session_state["nav_offset_days"] = 2
+        st.rerun()
+    if nav_cols[1].button("5 days", key="nav_5d", use_container_width=True):
+        st.session_state["nav_offset_days"] = 5
+        st.rerun()
+    if nav_cols[2].button("2 weeks", key="nav_14d", use_container_width=True):
+        st.session_state["nav_offset_days"] = 14
+        st.rerun()
+    if nav_cols[3].button("1 month", key="nav_30d", use_container_width=True):
+        st.session_state["nav_offset_days"] = 30
+        st.rerun()
+    if nav_cols[4].button("Full", key="nav_full", use_container_width=True):
+        st.session_state["nav_offset_days"] = 0
+        st.rerun()
+with nav_col3:
+    if not main_df_view.empty:
+        view_start = main_df_view.index[0].strftime("%Y-%m-%d")
+        view_end = main_df_view.index[-1].strftime("%Y-%m-%d")
+        st.caption(f"View: **{view_start} → {view_end}** ({len(main_df_view)} bars)")
 col_pool, col_bars = st.columns(2)
 with col_pool:
     pool_cap = st.slider(
