@@ -743,21 +743,50 @@ overlay_flags = {
     "eql_pool_swept": True,
     "premium_discount": True,
 }
+OVERLAY_COLORS = {
+    "candles": "#4a4a4a",
+    "ob": "rgba(0, 80, 255, 0.85)",
+    "fvg": "rgba(255, 215, 0, 0.95)",
+    "bos_up": "#0aa138",
+    "bos_down": "#d32f2f",
+    "choch_up": "#7fff00",
+    "choch_down": "#ff4500",
+    "sweep_up": "#00bcd4",
+    "sweep_down": "#ff00ff",
+    "displacement": "rgba(120,180,120,0.85)",
+    "eqh_pool_swept": "#008b8b",
+    "eql_pool_swept": "#800080",
+    "premium_discount_discount": "rgba(0,200,0,0.85)",
+    "premium_discount_premium": "rgba(200,0,0,0.85)",
+}
 overlay_cols = st.columns(5)
+def _swatch(color: str) -> str:
+    return f"<span style='display:inline-block;width:0.8em;height:0.8em;background:{color};border:1px solid #444;margin-right:0.4em;vertical-align:middle;'></span>"
 with overlay_cols[0]:
-    overlay_flags["candles"] = st.checkbox("Candles", True, key="ov_candles")
+    st.markdown(_swatch("#222") + "**Candles**", unsafe_allow_html=True)
+    overlay_flags["candles"] = st.checkbox("show", True, key="ov_candles", label_visibility="collapsed")
+    st.markdown(_swatch(OVERLAY_COLORS["fvg"]) + "**FVG**", unsafe_allow_html=True)
+    overlay_flags["fvg"] = st.checkbox("show", True, key="ov_fvg", label_visibility="collapsed")
 with overlay_cols[1]:
-    overlay_flags["ob"] = st.checkbox("OB", True, key="ov_ob")
-    overlay_flags["bos"] = st.checkbox("BOS", True, key="ov_bos")
+    st.markdown(_swatch(OVERLAY_COLORS["ob"]) + "**OB**", unsafe_allow_html=True)
+    overlay_flags["ob"] = st.checkbox("show", True, key="ov_ob", label_visibility="collapsed")
+    st.markdown(_swatch(OVERLAY_COLORS["bos_up"]) + "**BOS**", unsafe_allow_html=True)
+    overlay_flags["bos"] = st.checkbox("show", True, key="ov_bos", label_visibility="collapsed")
 with overlay_cols[2]:
-    overlay_flags["choch"] = st.checkbox("CHoCH", True, key="ov_choch")
-    overlay_flags["sweep"] = st.checkbox("Sweep", True, key="ov_sweep")
+    st.markdown(_swatch(OVERLAY_COLORS["choch_up"]) + "**CHoCH**", unsafe_allow_html=True)
+    overlay_flags["choch"] = st.checkbox("show", True, key="ov_choch", label_visibility="collapsed")
+    st.markdown(_swatch(OVERLAY_COLORS["sweep_up"]) + "**Sweep**", unsafe_allow_html=True)
+    overlay_flags["sweep"] = st.checkbox("show", True, key="ov_sweep", label_visibility="collapsed")
 with overlay_cols[3]:
-    overlay_flags["displacement"] = st.checkbox("Displacement", True, key="ov_disp")
-    overlay_flags["eqh_pool_swept"] = st.checkbox("EQH swept", True, key="ov_eqh")
+    st.markdown(_swatch(OVERLAY_COLORS["displacement"]) + "**Displacement**", unsafe_allow_html=True)
+    overlay_flags["displacement"] = st.checkbox("show", True, key="ov_disp", label_visibility="collapsed")
+    st.markdown(_swatch(OVERLAY_COLORS["eqh_pool_swept"]) + "**EQH swept**", unsafe_allow_html=True)
+    overlay_flags["eqh_pool_swept"] = st.checkbox("show", True, key="ov_eqh", label_visibility="collapsed")
 with overlay_cols[4]:
-    overlay_flags["eql_pool_swept"] = st.checkbox("EQL swept", True, key="ov_eql")
-    overlay_flags["premium_discount"] = st.checkbox("P/D zones", True, key="ov_pd")
+    st.markdown(_swatch(OVERLAY_COLORS["eql_pool_swept"]) + "**EQL swept**", unsafe_allow_html=True)
+    overlay_flags["eql_pool_swept"] = st.checkbox("show", True, key="ov_eql", label_visibility="collapsed")
+    st.markdown(_swatch(OVERLAY_COLORS["premium_discount_premium"]) + "**P/D zones**", unsafe_allow_html=True)
+    overlay_flags["premium_discount"] = st.checkbox("show", True, key="ov_pd", label_visibility="collapsed")
 all_cols = st.columns([6, 1, 1])
 with all_cols[0]:
     st.caption(f"Overlays: {sum(1 for v in overlay_flags.values() if v)} of {len(overlay_flags)} enabled")
