@@ -93,7 +93,9 @@ boxBudget   = displayMode == "Recent" ? recentBoxBudget : math.min(recentBoxBudg
 // When Custom preset is chosen, individual customShowX flags control visibility
 showStructureEffective   = (presetDecision or presetContext or presetDebug or (presetCustom and customShowStructure)) and showStructure
 showOrderBlocksEffective = (presetDecision or presetContext or presetDebug or (presetCustom and customShowOrderBlocks)) and showOrderBlocks
-showSwingsEffective      = (presetDecision or presetContext or presetDebug or (presetCustom and customShowSwings)) and (showSwings or presetDebug)
+// Swings and step lines hidden by default - use Volume Profile on TradingView for visual structure
+// Debug preset force-on; Custom requires customShowSwings; Decision/Context require explicit tick + Debug fallback
+showSwingsEffective      = presetDebug or (presetCustom and customShowSwings)
 showSweepsEffective      = (presetDecision or presetContext or presetDebug or (presetCustom and customShowSweeps)) and showSweeps
 showFvgsEffective        = (presetDecision or presetContext or presetDebug or (presetCustom and customShowFvgs)) and showFvgs
 showPoolsEffective       = (presetDecision or presetContext or presetDebug or (presetCustom and customShowPools)) and showPools
