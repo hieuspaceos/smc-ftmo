@@ -411,10 +411,19 @@ def build_main_chart(
 
     fig.update_layout(
         title=f"{pair} {timeframe} — SMC overlays",
-        xaxis_rangeslider_visible=False, height=820,
-        legend=dict(orientation="h", y=1.02, x=0),
+        legend=dict(
+            orientation="h",
+            y=1.02,
+            x=0,
+            bgcolor="rgba(255,255,255,0.6)",
+            bordercolor="rgba(0,0,0,0.1)",
+            borderwidth=1,
+            itemclick="toggle",
+            itemdoubleclick="toggleothers",
+            groupclick="toggleitem",
+            tracegroupgap=4,
+        ),
         margin=dict(l=60, r=40, t=80, b=60),
-        dragmode="pan",
         hovermode="closest",
         modebar=dict(
             orientation="h",
