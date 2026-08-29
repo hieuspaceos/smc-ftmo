@@ -683,14 +683,16 @@ with nav_col2:
         st.rerun()
     if nav_cols[2].button("2 weeks", key="nav_14d", use_container_width=True):
         st.session_state["nav_offset_days"] = 14
+        st.session_state["chart_max_bars"] = 1400
         st.rerun()
     if nav_cols[3].button("1 month", key="nav_30d", use_container_width=True):
         st.session_state["nav_offset_days"] = 30
+        st.session_state["chart_max_bars"] = 1800
         st.rerun()
     if nav_cols[4].button("Full", key="nav_full", use_container_width=True):
         st.session_state["nav_offset_days"] = 0
+        st.session_state["chart_max_bars"] = 1500
         st.rerun()
-with nav_col3:
     if not main_df_view.empty:
         view_start = main_df_view.index[0].strftime("%Y-%m-%d")
         view_end = main_df_view.index[-1].strftime("%Y-%m-%d")
