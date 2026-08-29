@@ -697,10 +697,6 @@ with nav_col2:
         st.session_state["nav_offset_days"] = 0
         st.session_state["chart_max_bars"] = 1500
         st.rerun()
-    if not main_df_view.empty:
-        view_start = main_df_view.index[0].strftime("%Y-%m-%d")
-        view_end = main_df_view.index[-1].strftime("%Y-%m-%d")
-        st.caption(f"View: **{view_start} → {view_end}** ({len(main_df_view)} bars)")
 col_pool, col_bars = st.columns(2)
 with col_pool:
     pool_cap = st.slider(
@@ -720,6 +716,13 @@ st.session_state["chart_max_bars"] = int(chart_view_limit)
 CHART_MAX_BARS = int(chart_view_limit)
 if len(main_df_view) > CHART_MAX_BARS:
     main_df_view = main_df_view.tail(CHART_MAX_BARS)
+with nav_col3:
+    if not main_df_view.empty:
+        view_start = main_df_view.index[0].strftime("%Y-%m-%d")
+        view_end = main_df_view.index[-1].strftime("%Y-%m-%d")
+        st.caption(
+            f"View: {view_start} → {view_end}  ({len(main_df_view)} bars)"
+        )
 signals = _compute_overlays(
     pair, timeframe,
     str(start_date) if start_date else "",
