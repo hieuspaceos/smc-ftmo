@@ -640,45 +640,33 @@ for col, tf in zip(mini_cols, ["D", "H4", "H1", "M15"]):
                         use_container_width=True, key=f"mini_{tf}_{pair}")
 # -------------------- MAIN CHART --------------------
 
-with st.expander("Chart shortcuts (Plotly)", expanded=False):
+with st.expander("Chart tips & shortcuts (Plotly)", expanded=False):
     st.markdown(
         """
-        - **Drag**: Box zoom (default with this chart) — draw a rectangle to zoom in.
-        - **Pan / Move**: click the **Pan** button in the toolbar, then drag.
+        - **Drag**: Box zoom — draw a rectangle to zoom in.
+        - **Pan / Move**: click the **Pan** button on the toolbar, then drag.
         - **Zoom in / out**: scroll wheel on the chart.
         - **Auto-fit axes**: click **Reset Axes** in the toolbar, or double-click.
+        - **Toggle overlays**: single-click an item in the legend to hide it; double-click to isolate it.
         - **Save view**: right-click the chart → *Download plot as PNG*.
-        - Toggle any overlay in the legend (single click to hide, double click to isolate).
         """
     )
-st.caption("Tip: tap the toolbar above the chart to switch between Box Zoom, Pan, and Reset.")
-
-main_df = data[timeframe]
-if start_date and end_date:
-    try:
-        start_ts = pd.Timestamp(start_date)
-        end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
-        main_df_view = main_df[(main_df.index >= start_ts) & (main_df.index < end_ts)]
-    except Exception:
-        main_df_view = main_df.tail(500)
-else:
-    main_df_view = main_df.tail(500)
-# Cap the visible chart to keep Plotly responsive; full-period signals
-# still drive run_backtest via the Period widget, so capping only affects
-# the visual overlay density, not the trade count.
 _CHART_MAX_BARS_DEFAULT = 400
-pool_cap = st.slider(
-    "Visible EQH/EQL pools on chart (most recent first)",
-    min_value=0, max_value=80, step=4, value=8,
-    help="0 = hide pools, 80 = show all. Use a small value when many bars are visible to keep the chart readable.",
-)
-chart_view_limit = st.number_input(
-    "Visible bars per chart slice (lower = zoom in)",
-    min_value=150, max_value=3000, step=50,
-    value=int(st.session_state.get("chart_max_bars", _CHART_MAX_BARS_DEFAULT)),
-    key="chart_max_bars_input",
-    help="Lower = zoom in. Higher = see more bars but smaller candles.",
-)
+col_pool, col_bars = st.columns(2)
+with col_pool:
+    pool_cap = st.slider(
+        "EQH/EQL pools visible",
+        min_value=0, max_value=80, step=4, value=8,
+        help="0 = hide pools, 80 = show all. Use a small value when many bars are visible.",
+    )
+with col_bars:
+    chart_view_limit = st.number_input(
+        "Visible bars per slice",
+        min_value=150, max_value=3000, step=50,
+        value=int(st.session_state.get("chart_max_bars", _CHART_MAX_BARS_DEFAULT)),
+        key="chart_max_bars_input",
+        help="Lower = zoom in. Higher = see more bars but smaller candles.",
+    )
 st.session_state["chart_max_bars"] = int(chart_view_limit)
 CHART_MAX_BARS = int(chart_view_limit)
 if len(main_df_view) > CHART_MAX_BARS:
