@@ -1,0 +1,24 @@
+{
+  "bars": 27,
+  "dataset": "synthetic",
+  "ohlc_sha256": "6b4acfc48c55510f36fb7b3a439212af309abd1a22444567fd2ce4658435a94a",
+  "session": null,
+  "settings": {
+    "atr_period": 14,
+    "close_break_buffer_atr": 0.0,
+    "displacement_atr_mult": 1.5,
+    "fvg_cap": 128,
+    "fvg_expiry_bars": 200,
+    "order_block_cap": 128,
+    "order_block_expiry_bars": 200,
+    "order_block_lookback": 20,
+    "sweep_atr_buffer": 0.05,
+    "swing_length": 4
+  },
+  "source": "synthetic",
+  "symbol": "SYNTH",
+  "timeframe": "M15",
+  "timezone": "UTC",
+  "window_end": "2024-01-01T06:30:00+00:00",
+  "window_start": "2024-01-01T00:00:00+00:00"
+}
