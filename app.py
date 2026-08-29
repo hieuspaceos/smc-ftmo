@@ -256,16 +256,30 @@ def build_main_chart(
             fillcolor="rgba(0, 80, 255, 0.25)", layer="below",
         )
 
-    # --- Fair Value Gaps (yellow Bar trace) ---
+    # --- Fair Value Gaps (yellow rectangles at actual price range) ---
+    # Use the top/bottom prices of each FVG so candles aren't squashed by a
+    # constant y=1.0 bar trace.
     active_fvgs = [f for f in signals.get("fvg", []) if in_view(f) and not getattr(f, "mitigated", False)]
+    for fvg in active_fvgs[-FVG_CAP:]:
+        top = getattr(fvg, "top", None)
+        bottom = getattr(fvg, "bottom", None)
+        if top is None or bottom is None:
+            continue
+        fig.add_shape(
+            type="rect",
+            x0=fvg.timestamp, x1=df.index[-1],
+            y0=float(bottom), y1=float(top),
+            line=dict(color="rgba(255, 215, 0, 0.0)"),
+            fillcolor="rgba(255, 215, 0, 0.30)",
+            layer="below",
+        )
+    # Single dummy trace so FVG still shows up in the legend with a swatch.
     if active_fvgs:
-        fig.add_trace(go.Bar(
-            x=[f.timestamp for f in active_fvgs[-FVG_CAP:]],
-            y=[1.0] * min(len(active_fvgs), FVG_CAP),
-            marker_color="rgba(255, 215, 0, 0.30)",
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=12, symbol="square", color="rgba(255,215,0,0.6)"),
             name="FVG", showlegend=True, hoverinfo="skip",
         ))
-
     # --- BOS / CHoCH (vectorized scatter+text, no per-event add_annotation) ---
     bos_sigs = [s for s in signals.get("bos", []) if in_view(s)][-BOS_CAP:]
     bos_bull = [(s.timestamp, s.price) for s in bos_sigs if s.direction == "bullish"]
@@ -325,20 +339,18 @@ def build_main_chart(
             name="Sweep ↓", showlegend=True,
             hovertemplate="Sweep bear @ %{x}<br>price=%{y:.5f}<extra></extra>",
         ))
-
-    # Displacement highlights: cap to most recent DISP_CAP, single Bar trace.
-    disp_in_view = [d for d in signals.get("displacement", []) if in_view(d)][-DISP_CAP:]
-    if disp_in_view:
-        fig.add_trace(go.Bar(
-            x=[d.timestamp for d in disp_in_view],
-            y=[1.0] * len(disp_in_view),
-            marker_color=[
-                "rgba(0,200,0,0.10)" if d.direction == "bullish" else "rgba(200,0,0,0.10)"
-                for d in disp_in_view
-            ],
-            opacity=0.25, name="Displacement", showlegend=True, hoverinfo="skip",
+    # Displacement highlights: add a dummy trace so the legend still has the
+    # "Displacement" swatch without forcing a fake y=1.0 bar that would
+    # squash the candle y-axis.
+    if signals.get("displacement"):
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(
+                size=14, symbol="square",
+                color="rgba(120,180,120,0.45)",
+            ),
+            name="Displacement", showlegend=True, hoverinfo="skip",
         ))
-
     # --- Premium / Discount zones ---
     pd_state = detect_premium_discount(df, lookback=params.get("pd_lookback", 50))
     eq = pd_state["equilibrium"]
@@ -411,11 +423,10 @@ def build_main_chart(
 
     fig.update_layout(
         title=f"{pair} {timeframe} — SMC overlays",
+        xaxis_rangeslider_visible=False, height=1000,
+        autosize=True,
         legend=dict(
             orientation="h",
-            y=1.02,
-            x=0,
-            bgcolor="rgba(255,255,255,0.6)",
             bordercolor="rgba(0,0,0,0.1)",
             borderwidth=1,
             itemclick="toggle",
@@ -632,14 +643,15 @@ for col, tf in zip(mini_cols, ["D", "H4", "H1", "M15"]):
 with st.expander("Chart shortcuts (Plotly)", expanded=False):
     st.markdown(
         """
-        - **Move / Pan**: hold **Space** + drag (or click the **Pan** button in the toolbar)
-        - **Zoom in / out**: scroll wheel on the chart, or click **Zoom In** / **Zoom Out** in the toolbar
-        - **Box zoom**: hold **Shift** + drag a rectangle (or click the **Box Zoom** toolbar button)
-        - **Auto-fit axes**: click **Reset Axes** in the toolbar
-        - **Save view**: right-click the chart → *Download plot as PNG*
+        - **Drag**: Box zoom (default with this chart) — draw a rectangle to zoom in.
+        - **Pan / Move**: click the **Pan** button in the toolbar, then drag.
+        - **Zoom in / out**: scroll wheel on the chart.
+        - **Auto-fit axes**: click **Reset Axes** in the toolbar, or double-click.
+        - **Save view**: right-click the chart → *Download plot as PNG*.
+        - Toggle any overlay in the legend (single click to hide, double click to isolate).
         """
     )
-st.caption("Tip: tap the toolbar above the chart to switch between Pan, Zoom, and Reset.")
+st.caption("Tip: tap the toolbar above the chart to switch between Box Zoom, Pan, and Reset.")
 
 main_df = data[timeframe]
 if start_date and end_date:
