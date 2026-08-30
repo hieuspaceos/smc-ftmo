@@ -109,6 +109,10 @@ class SignalRecord:
         if sl is None:
             sl = level - 0.0050 if side == "long" else level + 0.0050
         # Default take profits: R:R 1:2, 1:3, 1:4 from entry.
+        # LADDER default. Scale-in mode (see src/scale_in_exit.py) is NOT yet
+        # supported here — MQL5 EA (mql5_reader.mq5) only consumes tp[0]
+        # and does not orchestrate partial closes + leg2 entry. See
+        # docs/mt5-bridge-setup.md §10 for the full gap analysis.
         if tp_levels is None:
             risk = abs(level - sl)
             if side == "long":

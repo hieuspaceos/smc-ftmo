@@ -198,3 +198,72 @@ EXECUTOR_TRANSPORT=metaapi
 ```
 
 For now this raises `NotImplementedError` — switch to `EXECUTOR_TRANSPORT=file` for the local outbox flow.
+
+## 10. Scale-in Exit Mode — backtest only (Phase 06 limitation)
+
+**Status (milestone 2026-08-31):** ScaleInExit (`src/scale_in_exit.py`) is
+validated via `run_backtest(exit_mode='scale_in')` on EURUSD 2016-2026
+(1326 trades, PF 2.74, +23% PnL, -44% DD vs ladder). **The MT5 bridge does
+NOT yet support scale-in mode.**
+
+### Why the gap exists
+
+The current MT5 execution path (`signal_writer.py` → `mql5_reader.mq5`)
+places a single order with a single TP level:
+
+```cpp
+// mql5_reader.mq5 line 189-191
+// TP: take the first TP level for simplicity.
+CJSONValue tpArr = jv["tp"];
+double tp = (tpArr.IsArray() && tpArr.Size() > 0) ? tpArr[0].ToDouble() : 0;
+```
+
+Scale-in needs **multi-order orchestration**:
+
+1. Open leg1 with SL @ OB edge (1R). TP1 ignored (leg1 closes 50% at 2R via partial).
+2. Detect 2R hit (via MQL5 position monitor polling `OrderHistory` or
+   watching price).
+3. Close 50% of leg1 at 2R (lock +1R).
+4. Move SL of remaining 0.5 lot → entry (BE).
+5. **Open leg2**: separate market order at 2R with SL @ entry, TP @ 4R.
+6. Close both legs at 4R OR cascade-close when SL hits.
+
+Step 5 (open leg2 at runtime) is the missing piece. The current MQL5 EA
+only processes signals from the outbox; it has no logic to detect a
+partial-fill event and write a follow-up `leg2` signal back to the
+bridge.
+
+### Ladder mode works
+
+Ladder 40/30/30 has the same limitation in theory (partial closes), but
+FTMO-friendly behavior allows placing leg1 at the **2R TP** as the single
+`tp` field. The bot currently doesn't do partial TP either — it just
+sets TP1 = entry + 2R and lets MT5 close 100% at the first TP hit.
+Backtest simulates the partial ladder; live MT5 only sees TP1. This is a
+pre-existing compromise, not specific to scale-in.
+
+### Workaround: ladder mode for live FTMO
+
+For FTMO Challenge / Verification right now:
+
+1. Set `strategy.exit_mode = ladder` (default) in `config.yaml`.
+2. Bot sends entry with `tp = entry + 2R` to MT5.
+3. MT5 closes 100% at 2R. Misses the 3R/4R extension. Live PnL ≈ backtest's
+   conservative case.
+4. Scale-in 2R/4R payoff (max +4R per trade) is **unrealized** until MQL5
+   orchestration ships.
+
+### What's needed for scale-in live support
+
+| Piece | Status | Effort |
+|---|---|---|
+| MQL5 partial-close detection (watch for 2R fill) | not started | medium |
+| `leg2` signal write from MQL5 back to outbox | not started | medium |
+| `run_backtest` parity test for live execution path | not started | low |
+| Phase 06.5 MetaAPI alternative (cloud MT5) — reuses same logic | blocked on above | — |
+
+Until those ship, treat scale_in mode as a **research artifact**: use it
+for backtest exploration + Pine v1.3 visual overlay (manual chart study),
+but **do not deploy to live FTMO**. Ladder mode is the only validated
+live path.
+
