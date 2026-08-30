@@ -1,28 +1,25 @@
-"""FastAPI webhook server.
+"""FastAPI webhook server + background notification dispatch.
 
 Endpoints
 ---------
 - ``POST /webhooks/tradingview`` — accept Pine ``SMC|v1|...`` payload
 - ``GET  /healthz`` — liveness probe
 
-Source controls (per plan phase-01 §FastAPI server):
-- TradingView IP allowlist (configurable, defaults to published ranges)
-- Shared URL secret query param (HMAC-free for P0; relies on HTTPS)
-- 4 KB body cap
-- Per-IP + per-token rate limit (default 60 req/min)
-- Returns ``202 Accepted`` (new valid), ``200 OK`` (duplicate),
-  ``400 Bad Request`` (malformed), ``401 Unauthorized`` (auth fail),
-  ``413 Content Too Large`` (body > 4 KB), ``429 Too Many Requests``.
+Pipeline (per Phase 01 + 02 plans)
+-----------------------------------
+1. Verify source (TradingView IP allowlist + URL secret).
+2. Enforce 4 KB body cap.
+3. Parse ``SMC|v1|...`` into ``AlertPayload``.
+4. INSERT into ``alert_log`` (idempotent on ``signal_id + prefix``).
+5. Record ``signal_events`` row ``received`` (best-effort).
+6. Background task: dispatch to Telegram + Discord mirror.
+7. Record ``signal_events`` row ``notified`` / ``notified_failed``.
 
-Persistence happens BEFORE any external dispatch — TradingView 3-second
-webhook timeout means we must ``202 Accepted`` ASAP. Phase 02 will add
-background Telegram dispatch via ``BackgroundTasks``; P0 only persists.
-
-Thread-safety
--------------
-Rate limiter uses a per-app ``threading.Lock``. DB calls open a fresh
-connection per call (see ``bot.storage.db``). Auth-rejection logs are
-throttled per (ip, reason) so a single attacker cannot flood stderr.
+Returns
+-------
+``202 Accepted`` (new valid), ``200 OK`` (duplicate),
+``400 Bad Request`` (malformed), ``401 Unauthorized`` (auth fail),
+``413 Content Too Large`` (body > 4 KB), ``429 Too Many Requests``.
 """
 
 from __future__ import annotations
@@ -31,17 +28,20 @@ import logging
 import os
 import threading
 import time
-from collections import defaultdict, deque
+from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 
+from bot.notify.discord import DiscordMirror, mirror_from_env
+from bot.notify.formatting import callback_payload_json
+from bot.notify.telegram import TelegramDispatcher, dispatcher_from_env
 from bot.storage.db import BotDB, get_default_db_path, init_db
-from bot.webhook.payload import PayloadParseError, parse_payload
+from bot.webhook.payload import AlertPayload, PayloadParseError, parse_payload
 from bot.webhook.security import (
     SecurityConfig,
     body_within_cap,
@@ -52,7 +52,7 @@ from bot.webhook.security import (
 
 logger = logging.getLogger("bot.webhook")
 
-MIN_SECRET_LENGTH = 16  # reject obviously-weak tokens at boot time
+MIN_SECRET_LENGTH = 16
 
 
 # ---------------------------------------------------------------------------
@@ -76,15 +76,11 @@ class AppSettings:
     def from_env(cls) -> "AppSettings":
         secret = _env("SMC_WEBHOOK_TOKEN", "") or ""
         if not secret:
-            raise RuntimeError(
-                "SMC_WEBHOOK_TOKEN env var is required. "
-                "Set it to a long random string shared with TradingView alert URL."
-            )
+            raise RuntimeError("SMC_WEBHOOK_TOKEN env var is required.")
         if len(secret) < MIN_SECRET_LENGTH:
             raise RuntimeError(
                 f"SMC_WEBHOOK_TOKEN is too short ({len(secret)} chars). "
-                f"Use at least {MIN_SECRET_LENGTH} chars — e.g. "
-                "`python -c \"import secrets; print(secrets.token_urlsafe(32))\"`."
+                f"Use at least {MIN_SECRET_LENGTH} chars."
             )
         db = Path(_env("SMC_BOT_DB_PATH", str(get_default_db_path())) or str(get_default_db_path()))
         return cls(
@@ -96,7 +92,7 @@ class AppSettings:
 
 
 # ---------------------------------------------------------------------------
-# Sliding-window rate limiter (in-process, per-IP + per-token)
+# Rate limiter + throttled logger
 # ---------------------------------------------------------------------------
 
 
@@ -107,12 +103,9 @@ class _RateLimiter:
         self._buckets: dict[str, deque[float]] = {}
 
     def hit(self, key: str, now: int | None = None) -> bool:
-        """Return True iff allowed. Thread-safe."""
         ts = now if now is not None else int(time.time())
         window_start = ts - 60
         with self._lock:
-            # Access dict under lock so first-touch of a key can't race-create
-            # competing deques.
             bucket = self._buckets.setdefault(key, deque())
             while bucket and bucket[0] < window_start:
                 bucket.popleft()
@@ -122,14 +115,7 @@ class _RateLimiter:
             return True
 
 
-# ---------------------------------------------------------------------------
-# Throttled logger (avoid spam from one attacker IP)
-# ---------------------------------------------------------------------------
-
-
 class _ThrottledLogger:
-    """Per-key log throttle: at most one entry per ``window_seconds``."""
-
     def __init__(self, window_seconds: float = 60.0) -> None:
         self._window = window_seconds
         self._lock = threading.Lock()
@@ -146,6 +132,59 @@ class _ThrottledLogger:
 
 
 # ---------------------------------------------------------------------------
+# Background dispatch
+# ---------------------------------------------------------------------------
+
+
+async def _safe_record(db: BotDB, signal_id: str, event_type: str, **kwargs: Any) -> None:
+    """Record a signal_events row; swallow DB failures so background dispatch never crashes."""
+    try:
+        db.record_event(signal_id, event_type, **kwargs)
+    except Exception:  # noqa: BLE001
+        logger.exception("record_event failed: signal_id=%s type=%s", signal_id, event_type)
+
+
+async def _dispatch_signal(
+    payload: AlertPayload,
+    dispatcher: Any,
+    mirror: Any,
+    db: BotDB,
+) -> None:
+    """Send to Telegram + Discord mirror; record signal_events audit rows.
+
+    Designed to run inside ``BackgroundTasks`` — exceptions are caught and
+    logged so background failures never crash the server. Telegram and
+    Discord are independent: a Telegram failure does NOT block Discord.
+    """
+    signal_id = payload.signal_id
+    payload_json = callback_payload_json(payload)
+
+    # Telegram — independent of Discord.
+    if getattr(dispatcher, "enabled", False):
+        try:
+            msg_id = await dispatcher.send_signal(payload)
+            if msg_id is not None:
+                await _safe_record(db, signal_id, "notified", payload=payload_json, actor="telegram")
+            else:
+                await _safe_record(db, signal_id, "notified_failed", payload=payload_json, actor="telegram")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("telegram send crashed: signal_id=%s exc=%s", signal_id, exc)
+            await _safe_record(db, signal_id, "notified_failed", actor="telegram", payload=str(exc))
+    else:
+        await _safe_record(db, signal_id, "notified_skipped", payload=payload_json, actor="telegram")
+
+    # Discord mirror — independent of Telegram.
+    if getattr(mirror, "enabled", False):
+        try:
+            ok = await mirror.send_signal(payload)
+            if not ok:
+                await _safe_record(db, signal_id, "mirror_failed", payload=payload_json, actor="discord")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("discord mirror crashed: signal_id=%s exc=%s", signal_id, exc)
+            await _safe_record(db, signal_id, "mirror_failed", actor="discord", payload=str(exc))
+
+
+# ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
 
@@ -154,35 +193,45 @@ def create_app(
     settings: AppSettings | None = None,
     *,
     db: BotDB | None = None,
+    dispatcher: Any | None = None,
+    mirror: Any | None = None,
 ) -> FastAPI:
     settings = settings or AppSettings.from_env()
-    # Closure-visible limiter so tests that bypass lifespan still get a working instance.
     limiter = _RateLimiter(settings.security.rate_limit_per_min)
-    # Closure-visible DB: tests pass `db=`, real lifespan creates one.
     if db is None:
         init_db(settings.db_path)
         active_db: BotDB = BotDB(settings.db_path)
     else:
         active_db = db
     log_throttle = _ThrottledLogger(window_seconds=60.0)
+    if dispatcher is None:
+        dispatcher = dispatcher_from_env()
+    if mirror is None:
+        mirror = mirror_from_env()
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-        # Mirror the closure reference into app.state for any external code that needs it.
         app.state.db = active_db
         app.state.limiter = limiter
-        logger.info("bot webhook ready: db=%s", settings.db_path)
+        app.state.dispatcher = dispatcher
+        app.state.mirror = mirror
+        logger.info(
+            "bot webhook ready: db=%s telegram=%s discord=%s",
+            settings.db_path,
+            getattr(dispatcher, "enabled", False),
+            getattr(mirror, "enabled", False),
+        )
         try:
             yield
         finally:
-            if db is None:  # only close if we created it
+            if db is None:
                 active_db.close()
 
     app = FastAPI(
         title="SMC Bot Webhook",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=_lifespan,
-        docs_url=None,  # hide /docs — keep attack surface small
+        docs_url=None,
         redoc_url=None,
         openapi_url=None,
     )
@@ -190,6 +239,8 @@ def create_app(
     app.state.url_secret = settings.url_secret
     app.state.limiter = limiter
     app.state.db = active_db
+    app.state.dispatcher = dispatcher
+    app.state.mirror = mirror
 
     async def _verify_source(request: Request) -> None:
         client_ip = extract_client_ip(
@@ -200,28 +251,21 @@ def create_app(
         token = request.query_params.get("token")
         if not check_ip_allowlist(client_ip, settings.security.ipv4_allowlist):
             log_throttle.log(
-                logging.WARNING,
-                f"ip:{client_ip}:not_allowed",
-                "rejecting webhook from disallowed ip=%s",
-                client_ip,
+                logging.WARNING, f"ip:{client_ip}:not_allowed",
+                "rejecting webhook from disallowed ip=%s", client_ip,
             )
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="ip not allowed")
         if not check_url_secret(token, settings.url_secret):
             log_throttle.log(
-                logging.WARNING,
-                f"ip:{client_ip}:bad_token",
-                "rejecting webhook from ip=%s: bad token",
-                client_ip,
+                logging.WARNING, f"ip:{client_ip}:bad_token",
+                "rejecting webhook from ip=%s: bad token", client_ip,
             )
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="bad token")
-        # Rate limit: combine ip + token so a leaked token from one IP can't drown others.
         rl_key = f"{client_ip}:{token[:6] if token else ''}"
         if not limiter.hit(rl_key):
             log_throttle.log(
-                logging.WARNING,
-                f"ip:{client_ip}:rate_limit",
-                "rate-limit hit for ip=%s",
-                client_ip,
+                logging.WARNING, f"ip:{client_ip}:rate_limit",
+                "rate-limit hit for ip=%s", client_ip,
             )
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -231,12 +275,19 @@ def create_app(
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
-        return {"status": "ok", "service": "smc-bot-webhook", "version": "0.1.0"}
+        return {
+            "status": "ok",
+            "service": "smc-bot-webhook",
+            "version": "0.2.0",
+            "telegram": bool(getattr(dispatcher, "enabled", False)),
+            "discord": bool(getattr(mirror, "enabled", False)),
+        }
 
     @app.post("/webhooks/tradingview")
     async def receive_alert(
         request: Request,
         response: Response,
+        background: BackgroundTasks,
         _: None = Depends(_verify_source),
     ) -> JSONResponse:
         body = await request.body()
@@ -259,6 +310,28 @@ def create_app(
             url_token_ok=True,
         )
 
+        if is_new:
+            # 'received' audit (best-effort, never break ingestion).
+            try:
+                active_db.record_event(
+                    payload.signal_id, "received",
+                    payload=callback_payload_json(payload),
+                    actor=f"webhook:{client_ip or 'unknown'}",
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to record received event for %s", payload.signal_id)
+
+            # Background dispatch. BackgroundTasks runs AFTER response is sent
+            # in production Starlette (and in TestClient too). Dispatch itself
+            # NEVER blocks the response.
+            background.add_task(
+                _dispatch_signal,
+                payload,
+                dispatcher,
+                mirror,
+                active_db,
+            )
+
         body_json = {
             "alert_id": alert_id,
             "signal_id": payload.signal_id,
@@ -270,15 +343,9 @@ def create_app(
                 "alert accepted: signal_id=%s event=%s state=%s",
                 payload.signal_id, payload.event, payload.state,
             )
-            return JSONResponse(
-                body_json,
-                status_code=status.HTTP_202_ACCEPTED,
-            )
+            return JSONResponse(body_json, status_code=status.HTTP_202_ACCEPTED)
         logger.info("alert duplicate (signal_id=%s) bumped dedupe_count", payload.signal_id)
-        return JSONResponse(
-            body_json,
-            status_code=status.HTTP_200_OK,
-        )
+        return JSONResponse(body_json, status_code=status.HTTP_200_OK)
 
     @app.exception_handler(HTTPException)
     async def _http_exc_handler(_: Request, exc: HTTPException) -> JSONResponse:
@@ -287,14 +354,10 @@ def create_app(
     return app
 
 
-# Default module-level app for ``uvicorn bot.webhook.server:app``.
-
-
 def _build_default_app() -> FastAPI | None:
     try:
         return create_app(AppSettings.from_env())
     except RuntimeError as exc:
-        # Avoid blowing up imports during tests / docs builds.
         logger.debug("default app not built: %s", exc)
         return None
 

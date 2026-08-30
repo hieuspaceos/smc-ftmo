@@ -35,7 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_alert_log_symbol_tf    ON alert_log(symbol, tf);
 CREATE TABLE IF NOT EXISTS signal_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     signal_id     TEXT NOT NULL,
-    event_type    TEXT NOT NULL,  -- 'received'|'notified'|'accepted'|'rejected'|'expired'|'notified_failed'
+    event_type    TEXT NOT NULL,  -- 'received'|'notified'|'notified_failed'|'notified_skipped'|'mirror_failed'|'accept'|'reject'|'edit_failed'|'expired'
     payload       TEXT,
     actor         TEXT,
     created_at    TEXT NOT NULL

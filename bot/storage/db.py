@@ -204,3 +204,90 @@ class BotDB:
         with self._conn_ctx() as conn:
             cur = conn.execute("SELECT COUNT(*) AS c FROM alert_log")
             return int(cur.fetchone()["c"])
+    # ------------------------------------------------------------------
+    # Phase 02: signal_events lifecycle + gate_ack helpers
+    # ------------------------------------------------------------------
+
+    def record_event(
+        self,
+        signal_id: str,
+        event_type: str,
+        *,
+        payload: str | None = None,
+        actor: str | None = None,
+    ) -> int:
+        """Append a lifecycle event row. Returns the new event id."""
+        with self._conn_ctx() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO signal_events (signal_id, event_type, payload, actor, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (signal_id, event_type, payload, actor, _utc_now_iso()),
+            )
+            return int(cur.lastrowid)
+
+    def latest_event(self, signal_id: str) -> dict[str, Any] | None:
+        with self._conn_ctx() as conn:
+            cur = conn.execute(
+                "SELECT * FROM signal_events WHERE signal_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (signal_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def list_recent_events(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._conn_ctx() as conn:
+            cur = conn.execute(
+                "SELECT * FROM signal_events ORDER BY id DESC LIMIT ?",
+                (int(limit),),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def count_failed_notifications(self) -> int:
+        with self._conn_ctx() as conn:
+            cur = conn.execute(
+                "SELECT COUNT(*) AS c FROM signal_events WHERE event_type = 'notified_failed'"
+            )
+            return int(cur.fetchone()["c"])
+
+    # gate_ack helpers (used by Phase 03, declared now to keep API stable)
+    def upsert_gate_ack(
+        self,
+        trade_date: str,
+        gate_name: str,
+        value: bool,
+        *,
+        expires_at: str,
+        acknowledged_by: str | None = None,
+    ) -> int:
+        with self._conn_ctx() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO gate_ack (trade_date, gate_name, value, expires_at, acknowledged_by, acknowledged_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_date, gate_name) DO UPDATE SET
+                    value = excluded.value,
+                    expires_at = excluded.expires_at,
+                    acknowledged_by = excluded.acknowledged_by,
+                    acknowledged_at = excluded.acknowledged_at
+                """,
+                (
+                    trade_date,
+                    gate_name,
+                    1 if value else 0,
+                    expires_at,
+                    acknowledged_by,
+                    _utc_now_iso(),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def get_gate_acks(self, trade_date: str) -> list[dict[str, Any]]:
+        with self._conn_ctx() as conn:
+            cur = conn.execute(
+                "SELECT * FROM gate_ack WHERE trade_date = ? ORDER BY gate_name",
+                (trade_date,),
+            )
+            return [dict(r) for r in cur.fetchall()]
