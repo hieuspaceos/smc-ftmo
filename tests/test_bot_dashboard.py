@@ -170,7 +170,7 @@ class TestRenderExecution:
 class TestRenderReplay:
     def test_empty_dir_returns_empty_files(self, tmp_path: Path) -> None:
         result = render_replay(tmp_path)
-        assert result == {"files": [], "dir": str(tmp_path)}
+        assert result == {"files": []}
 
     def test_lists_signals_csv(self, tmp_path: Path) -> None:
         (tmp_path / "signals_a.csv").write_text("a,b\n1,2\n")
@@ -181,7 +181,7 @@ class TestRenderReplay:
         assert "signals_a.csv" in names
         assert "signals_b.csv" in names
         assert "other.csv" not in names
-        assert result["dir"] == str(tmp_path)
+        # Fix: dir field removed (audit Fix #1) — verify only files is exposed
 
 
 class TestRenderAudit:

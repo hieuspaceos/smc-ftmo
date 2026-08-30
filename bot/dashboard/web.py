@@ -77,14 +77,20 @@ def render_live(
     state: str | None = None,
     since: str | None = None,
 ) -> dict[str, Any]:
-    """Live Queue data: latest alerts joined with most recent accept/reject."""
+    """Live Queue data: latest alerts joined with most recent accept/reject.
+
+    Raises ``ValueError`` if ``since`` is not a valid ISO timestamp — the
+    HTTP layer translates this to 422. Previously invalid `since` was silently
+    ignored, which meant callers could think they were filtering by date
+    while seeing ALL rows.
+    """
     events = db.list_recent_events(limit=limit * 2)
     since_dt = None
     if since:
         try:
             since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
-        except ValueError:
-            pass
+        except ValueError as e:
+            raise ValueError(f"invalid 'since' parameter (expected ISO timestamp): {e}")
 
     # Group events by signal_id, keep latest per group.
     by_sig: dict[str, dict[str, Any]] = {}
@@ -156,9 +162,10 @@ def _list_signal_csvs(signal_dir: Path) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for p in sorted(signal_dir.glob("signals_*.csv")):
         stat = p.stat()
+        # Note: do NOT expose 'path' (server-internal absolute filesystem
+        # layout leaks to remote callers). Only file name + metadata.
         out.append(
             {
-                "path": str(p),
                 "name": p.name,
                 "size": stat.st_size,
                 "mtime": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
@@ -169,7 +176,8 @@ def _list_signal_csvs(signal_dir: Path) -> list[dict[str, Any]]:
 
 def render_replay(signal_dir: Path, *, limit: int = 50) -> dict[str, Any]:
     files = _list_signal_csvs(signal_dir)
-    return {"files": files[:limit], "dir": str(signal_dir)}
+    # 'dir' was leaking the server-internal absolute path. Drop it.
+    return {"files": files[:limit]}
 
 
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
