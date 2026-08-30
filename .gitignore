@@ -15,6 +15,7 @@ env/
 
 # Data — không commit parquet (file lớn)
 data/
+histdata/
 
 # Output — không commit DB và report
 output/
@@ -35,3 +36,6 @@ desktop.ini
 # Logs
 *.log
 logs/
+
+# Symlinks to packages (avoid duplicate tracking)
+src/smc_engine
