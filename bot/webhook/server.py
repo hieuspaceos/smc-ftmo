@@ -224,6 +224,13 @@ def create_app(
         try:
             yield
         finally:
+            # Close Discord httpx client to avoid connection leak on shutdown.
+            close = getattr(mirror, "aclose", None)
+            if callable(close):
+                try:
+                    await close()
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to close discord mirror")
             if db is None:
                 active_db.close()
 

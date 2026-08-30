@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
+import logging
+
+logger = logging.getLogger("bot.storage")
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final, Iterator
@@ -208,6 +211,8 @@ class BotDB:
     # Phase 02: signal_events lifecycle + gate_ack helpers
     # ------------------------------------------------------------------
 
+    MAX_EVENT_PAYLOAD_BYTES = 32 * 1024  # 32 KB hard cap on signal_events.payload
+
     def record_event(
         self,
         signal_id: str,
@@ -216,7 +221,19 @@ class BotDB:
         payload: str | None = None,
         actor: str | None = None,
     ) -> int:
-        """Append a lifecycle event row. Returns the new event id."""
+        """Append a lifecycle event row. Returns the new event id.
+
+        ``payload`` is truncated to ``MAX_EVENT_PAYLOAD_BYTES`` (32 KB) — protects
+        against a runaway caller storing MB-sized strings in SQLite.
+        """
+        if payload is not None and len(payload.encode("utf-8")) > self.MAX_EVENT_PAYLOAD_BYTES:
+            logger.warning(
+                "truncating oversized signal_events payload: signal_id=%s type=%s size=%d",
+                signal_id, event_type, len(payload),
+            )
+            payload = payload.encode("utf-8")[: self.MAX_EVENT_PAYLOAD_BYTES].decode(
+                "utf-8", errors="replace"
+            )
         with self._conn_ctx() as conn:
             cur = conn.execute(
                 """

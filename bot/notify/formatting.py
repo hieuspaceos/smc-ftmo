@@ -50,7 +50,7 @@ class CallbackAction:
         return f"{self.action}:{self.signal_id}:{self.nonce}"
 
 
-def parse_callback_data(data: str) -> CallbackAction | None:
+def parse_callback_data(data: str) -> "CallbackAction | None":
     """Parse ``accept:<signal_id>:<nonce>`` or ``reject:<signal_id>:<nonce>``.
 
     Returns ``None`` if data is malformed. ``nonce`` is opaque — Phase 03 will
@@ -66,13 +66,14 @@ def parse_callback_data(data: str) -> CallbackAction | None:
         return None
     if not signal_id or not nonce:
         return None
-    # Defensive: signal_id must be hex (matches compute_signal_id output).
-    if any(c not in "0123456789abcdef" for c in signal_id.lower()):
+    # Normalize signal_id to lowercase — compute_signal_id always returns
+    # lowercase hex; an uppercase callback would never match a real signal.
+    signal_id = signal_id.lower()
+    if any(c not in "0123456789abcdef" for c in signal_id):
         return None
-    if len(nonce) < 4:
+    if len(nonce) < 4 or len(nonce) > 64:
         return None
     return CallbackAction(action=action, signal_id=signal_id, nonce=nonce)
-
 
 def render_gate_checklist(states: dict[str, bool | None] | None = None) -> str:
     """Render the 6 manual gates as a checklist.

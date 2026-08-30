@@ -116,6 +116,12 @@ class DiscordMirror:
     def enabled(self) -> bool:
         return True
 
+    async def aclose(self) -> None:
+        close = getattr(self._transport, "aclose", None)
+        if callable(close):
+            await close()
+
+
     async def send_signal(
         self,
         payload: AlertPayload,

@@ -26,6 +26,8 @@ import asyncio
 import logging
 import os
 import secrets
+import json
+from json import dumps as json_dumps
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -415,7 +417,10 @@ class TelegramDispatcher:
         db.record_event(
             signal_id,
             decision,
-            payload=f'{{"decision":"{decision}","actor":"{actor}","nonce":"{nonce}"}}',
+            payload=json_dumps(
+                {"decision": decision, "actor": actor, "nonce": nonce},
+                sort_keys=True,
+            ),
             actor=actor,
         )
 
