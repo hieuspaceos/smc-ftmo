@@ -75,6 +75,10 @@ slice-by-slice handoff.
 > TradingView window, dump Pine rows in the canonical CSV shape, then
 > run `scripts/compare-pine-parity.py`. Until then the previous label
 > `parity-achieved` was misleading — this label is honest.
+>
+> See `plans/260831-0430-pine-parity-capture-procedure/` for the full
+> step-by-step procedure to upgrade this label to actual
+> `parity-achieved` (Bar-Replay capture from TradingView + diff).
 
 ## Smoke Invariants
 
