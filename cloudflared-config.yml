@@ -1,0 +1,28 @@
+# Cloudflare Tunnel config (quick tunnel example).
+#
+# Quick tunnel (URL changes every restart, free):
+#   cloudflared tunnel --url http://localhost:8000
+#
+# Named tunnel (stable URL, free tier + domain you own):
+#   cloudflared tunnel login
+#   cloudflared tunnel create smc-bot
+#   cloudflared tunnel route dns smc-bot webhook.your-domain.com
+#   cloudflared tunnel run smc-bot
+#
+# TradingView webhook URL becomes:
+#   https://<tunnel-host>/webhooks/tradingview?token=<SMC_WEBHOOK_TOKEN>
+#
+# See docs/cloudflare-access-setup.md for full steps + Access policy.
+
+tunnel: smc-bot
+# credentials-file: /Users/<you>/.cloudflared/<tunnel-id>.json
+
+ingress:
+  # Webhook (public, no Cloudflare Access — TradingView POSTs here).
+  - hostname: webhook.your-domain.com
+    service: http://localhost:8000
+  # Admin dashboard (protected by Cloudflare Access — see docs/).
+  - hostname: admin.your-domain.com
+    service: http://localhost:8501
+  # Catch-all 404 for unknown hostnames.
+  - service: http_status:404

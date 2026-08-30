@@ -3,7 +3,13 @@ plotly>=5.18
 pandas>=2.0
 numpy>=1.24
 pyarrow>=14.0
-
 ta>=0.11
 pyyaml>=6.0
 sqlalchemy>=2.0
+
+# Bot (Phase 01+): webhook + payload parser + storage. Phase 02+ adds python-telegram-bot.
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+pydantic>=2.7,<3.0
+httpx>=0.27,<1.0
+python-dotenv>=1.0,<2.0
