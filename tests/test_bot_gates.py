@@ -338,16 +338,16 @@ class TestValidatorOrchestration:
 class TestAckKeyboard:
     def test_keyboard_layout_three_gates(self) -> None:
         kb = build_ack_keyboard(
-            "abc1234567890ab", ["risk_ok", "trades_left", "daily_loss_ok"]
+            "abc1234567890abc", ["risk_ok", "trades_left", "daily_loss_ok"]
         )
         rows = kb["inline_keyboard"]
         assert len(rows) == 3
-        assert rows[0][0]["callback_data"] == "ack:risk_ok:abc1234567890ab"
-        assert rows[0][1]["callback_data"] == "ack:trades_left:abc1234567890ab"
+        assert rows[0][0]["callback_data"] == "ack:risk_ok:abc1234567890abc"
+        assert rows[0][1]["callback_data"] == "ack:trades_left:abc1234567890abc"
         assert len(rows[1]) == 1
-        assert rows[1][0]["callback_data"] == "ack:daily_loss_ok:abc1234567890ab"
-        assert rows[2][0]["callback_data"] == "accept:abc1234567890ab:nonce"
-        assert rows[2][1]["callback_data"] == "reject:abc1234567890ab:nonce"
+        assert rows[1][0]["callback_data"] == "ack:daily_loss_ok:abc1234567890abc"
+        assert rows[2][0]["callback_data"] == "accept:abc1234567890abc:nonce"
+        assert rows[2][1]["callback_data"] == "reject:abc1234567890abc:nonce"
 
     def test_no_missing_gives_only_accept_reject(self) -> None:
         kb = build_ack_keyboard("sig1", [])
@@ -364,12 +364,12 @@ class TestAckKeyboard:
 
 class TestParseAckCallback:
     def test_valid_ack(self) -> None:
-        result = TelegramDispatcher.parse_ack_callback("ack:risk_ok:abc1234567890ab")
-        assert result == ("risk_ok", "abc1234567890ab")
+        result = TelegramDispatcher.parse_ack_callback("ack:risk_ok:abc1234567890abc")
+        assert result == ("risk_ok", "abc1234567890abc")
 
     def test_uppercase_normalized(self) -> None:
-        result = TelegramDispatcher.parse_ack_callback("ack:risk_ok:ABC1234567890AB")
-        assert result == ("risk_ok", "abc1234567890ab")
+        result = TelegramDispatcher.parse_ack_callback("ack:risk_ok:ABC1234567890ABC")
+        assert result == ("risk_ok", "abc1234567890abc")
 
     def test_unknown_gate_rejected(self) -> None:
         assert TelegramDispatcher.parse_ack_callback("ack:not_a_gate:sig") is None

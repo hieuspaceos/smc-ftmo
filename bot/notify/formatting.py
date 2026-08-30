@@ -71,10 +71,13 @@ def parse_callback_data(data: str) -> "CallbackAction | None":
     signal_id = signal_id.lower()
     if any(c not in "0123456789abcdef" for c in signal_id):
         return None
+    # signal_id must be exactly the canonical length (compute_signal_id returns 16 hex).
+    # Reject anything else — this also blocks DoS via huge signal_id strings.
+    if len(signal_id) != 16:
+        return None
     if len(nonce) < 4 or len(nonce) > 64:
         return None
     return CallbackAction(action=action, signal_id=signal_id, nonce=nonce)
-
 def render_gate_checklist(states: dict[str, bool | None] | None = None) -> str:
     """Render the 6 manual gates as a checklist.
 

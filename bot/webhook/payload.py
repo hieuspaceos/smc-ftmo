@@ -144,6 +144,34 @@ class AlertPayload(BaseModel):
 
     model_config = ConfigDict(frozen=False, str_strip_whitespace=True)
 
+    @classmethod
+    def model_construct(cls, _fields_set: set[str] | None = None, **values: Any) -> "AlertPayload":  # type: ignore[override]
+        """Override ``model_construct`` so re-hydrating from the DB without
+        ``signal_id`` still produces the canonical hash.
+
+        Pydantic's ``model_construct`` deliberately skips all validators
+        (including ``@model_validator`` that fills ``signal_id``). Callers
+        that re-build an AlertPayload from a stored row would otherwise
+        get ``signal_id=''`` — which silently breaks audit-row lookups by
+        signal_id (every audit row stores ``''``).
+
+        This override re-computes ``signal_id`` when it's empty or missing,
+        matching what ``@model_validator`` does during normal validation.
+        """
+        obj = super().model_construct(_fields_set=_fields_set, **values)
+        if not obj.signal_id:
+            obj.signal_id = compute_signal_id(
+                event=obj.event,
+                symbol=obj.symbol,
+                tf=obj.tf,
+                dir_=obj.dir,
+                level=obj.level,
+                bar_time=obj.bar_time,
+                ob_id=obj.ob_id,
+                bos_id=obj.bos_id,
+            )
+        return obj
+
     prefix: Literal["SMC"]
     version: Literal["v1"]
     event: str

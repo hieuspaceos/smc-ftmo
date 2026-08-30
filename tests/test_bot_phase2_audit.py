@@ -154,13 +154,13 @@ class TestParseCallbackNormalization:
     def test_nonce_length_capped_4_to_64(self) -> None:
         """Telegram limits callback_data to 64 bytes; nonce must fit."""
         # Too short (3 chars)
-        assert parse_callback_data("accept:abc1234567890ab:abc") is None
+        assert parse_callback_data("accept:abc1234567890abc:abc") is None
         # Too long (65+ chars)
         long_nonce = "n" * 65
-        assert parse_callback_data(f"accept:abc1234567890ab:{long_nonce}") is None
+        assert parse_callback_data(f"accept:abc1234567890abc:{long_nonce}") is None
         # Exactly 64
         ok_nonce = "n" * 64
-        cb = parse_callback_data(f"accept:abc1234567890ab:{ok_nonce}")
+        cb = parse_callback_data(f"accept:abc1234567890abc:{ok_nonce}")
         assert cb is not None
         assert len(cb.nonce) == 64
 
