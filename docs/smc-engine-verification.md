@@ -2,9 +2,9 @@
 status: active
 title: "SMC Engine Verification"
 created: "2026-08-29"
-updated: "2026-08-30"
-version: "v1.2"
-pine-status: "parity-achieved"
+updated: "2026-08-31"
+version: "v1.3"
+pine-status: "parity-tooling-complete"
 # SMC Engine Verification
 
 ## Đọc nhanh bằng tiếng Việt
@@ -58,12 +58,23 @@ tuned on. Parity tooling:
 
 Tests: `tests/test_pine_parity_tools.py` covers exporter determinism,
 comparator float tolerance, pool member-list equality, and the frozen
-feed capture smoke path. Current parity count: **8 passed** (was 6
-before Gate B and the capture CLI).
+feed capture smoke path. Current parity count: **15 passed** (was 6
+before Gate B and 8 before the v1.3 cleanup; 15 after adding frozen
+feed, reference, and Rulebook Gaps suites).
 
 See `docs/smc-engine-tradingview-guide.md` for the user guide and
 `plans/260829-1830-smc-engine-pinescript-indicator/reports/` for the
 slice-by-slice handoff.
+
+> **Honest note (2026-08-31):** `pine-status: parity-tooling-complete`
+> is accurate — only the *tooling* is verified (Python exporter
+> determinism, comparator logic, schema coverage, capture CLI smoke).
+> There is **no captured Pine CSV** in `tests/fixtures/pine-parity/`
+> today, so actual Pine↔Python event diff on real data has not been
+> performed. To upgrade to `parity-achieved`, Bar-Replay a frozen
+> TradingView window, dump Pine rows in the canonical CSV shape, then
+> run `scripts/compare-pine-parity.py`. Until then the previous label
+> `parity-achieved` was misleading — this label is honest.
 
 ## Smoke Invariants
 
