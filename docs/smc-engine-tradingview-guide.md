@@ -3,8 +3,7 @@ status: active
 title: "SMC Engine TradingView Guide"
 created: "2026-08-29"
 updated: "2026-08-30"
-version: "v1.2"
----
+version: "v1.3"
 
 # SMC Engine TradingView Guide
 
@@ -129,7 +128,38 @@ Alerts cover:
 Alerts are deduped by the linked event id (synthetic BOS key, OB id, etc.)
 so a refresh does not re-fire finalized events.
 
-## 10. Limitations
+## 10. Scale-in Exit Mode (Design A + B)
+Optional visual layer for the 2R/4R scale-in exit logic from
+`src/scale_in_exit.py`. Off by default; flip the **Use scale-in exit mode**
+input to enable.
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| Use scale-in exit mode (Design A) | `false` | Toggle the entire scale-in layer (2R trigger + 4R final TP lines, 3 context rows) |
+| Scale-in leg2 TP1 (R, Design B) | `3.0` | Optional intermediate TP for leg2 at N×R from original entry (Design B opt-in) |
+| Show scale-in TP lines on chart | `true` | Render the three level lines; hide to keep chart clean |
+
+**Lines drawn when enabled** (Pine uses `plot.style_linebr` so each line
+extends to the right edge until the next qualifying OB replaces it):
+
+- **Teal** — 2R scale-in trigger (leg1 partial close + leg2 entry)
+- **Fuchsia** — 4R final TP (both legs close)
+- **Orange (60% transparent)** — leg2 TP1 (Design B), only when `scaleInLeg2Tp1R > 2.0`
+
+**Context table** gains 3 rows when enabled: `SI 2R`, `Leg2 TP1`, `SI 4R`.
+Values render as `—` when the toggle is off.
+
+Math is locked against `src/scale_in_exit.py`: `scale_in_r=2.0`,
+`final_tp_r=4.0`, optional `leg2_tp1_r=3.0`. The Pine indicator does NOT
+auto-trade; it only draws the planned exit levels for visual confirmation.
+Manual trade 8-week protocol still uses ladder 40/30/30 (see
+`journal/rule-book.md` §1).
+
+**Backward compatibility**: when `Use scale-in exit mode` is `false`, all
+scale-in vars stay `na` and no markers are emitted. Existing
+`rulebookTarget` / `rulebookStop` / `rulebookEntry` behavior is unchanged.
+
+## 11. Limitations
 
 - Chart-timeframe event parity only. Lower-timeframe reconstruction from
   intrabars is out of scope.
@@ -137,7 +167,7 @@ so a refresh does not re-fire finalized events.
 - The Rulebook profile does not include breaker, body-mode, or regime
   behavior (deferred per locked plan decision).
 
-## 11. Verification Procedure
+## 12. Verification Procedure
 
 1. Run the parity tooling on the synthetic fixture:
    ```

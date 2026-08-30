@@ -519,6 +519,32 @@ with st.sidebar:
     tp_profile = st.selectbox("TP profile", list(tp_profiles.keys()), index=0)
     partial_tp = list(tp_profiles[tp_profile])
 
+    # Exit mode: ladder (default, PartialTPExit) or scale_in (ScaleInExit 2R/4R).
+    # scale_in only meaningful with Conservative (2R/3R/4R) profile.
+    exit_mode = st.selectbox(
+        "Exit mode",
+        ["ladder", "scale_in"],
+        index=0 if strat_cfg.get("exit_mode", "ladder") == "ladder" else 1,
+        help=(
+            "ladder = PartialTPExit theo stages (40/30/30 default). "
+            "scale_in = ScaleInExit 2R/4R: đóng 50% leg1 @ 2R, mở leg2, "
+            "cả hai đóng @ 4R. Backtest: +23% PnL, -44% DD vs ladder."
+        ),
+    )
+    leg2_tp1_r = None
+    if exit_mode == "scale_in":
+        enable_design_b = st.checkbox(
+            "Enable Design B (leg2 TP1 intermediate)",
+            value=False,
+            help=(
+                "leg2 chốt 50% tại 3R, move SL leg2 rem → 3R. "
+                "Tăng winrate +5pp nhưng giảm PnL -3.2%. Off = Design A."
+            ),
+        )
+        if enable_design_b:
+            leg2_tp1_r = 3.0
+
+
     displacement_thr = st.slider("Displacement ATR mult", 1.0, 3.0,
                                  float(strat_cfg.get("displacement_atr_mult", 1.5)),
                                  help=RULE_TOOLTIPS["displacement_thr"])
@@ -836,6 +862,8 @@ run_cfg = {
         "bias_mode": "strict" if bias_mode == "strict (D+H4)" else bias_mode,
         "regime_mode": regime_mode,
         "promotion_lookback_bars": int(promotion_lookback),
+        "exit_mode": exit_mode,
+        "leg2_tp1_r": leg2_tp1_r,
     },
     "confluence": {"weights": {"displacement": 1, "bias_aligned": 1,
                                 "sweep_clean": 1, "premium_discount": 1,

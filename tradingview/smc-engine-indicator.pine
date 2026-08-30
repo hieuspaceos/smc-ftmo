@@ -45,7 +45,16 @@ rulebookEntryProximityAtr= input.float(1.5, "Entry proximity ATR", minval=0.1, s
 rulebookSlEdgeAtr        = input.float(0.2, "SL edge buffer ATR", minval=0.0, step=0.05, group=groupRulebook)
 rulebookSlMaxAtr         = input.float(1.2, "Max SL distance ATR", minval=0.1, step=0.1, group=groupRulebook)
 rulebookMinRR            = input.float(2.0, "Minimum 2R target", minval=0.5, step=0.5, group=groupRulebook)
-useDynamicAlertPayload = input.bool(false, "Use dynamic alert payload (P0 webhook)", group=groupRulebook)
+// Scale-in mode (Design A): when ON, draws 2R trigger line (partial close +
+// leg2 entry) and 4R final TP line instead of the single 2R target. Backtest
+// validated: +23% PnL, -44% DD vs ladder. Off = legacy single-target view.
+// See journal/rule-book.md §1 and src/scale_in_exit.py for math invariants.
+useScaleInMode           = input.bool(false, "Use scale-in exit mode (Design A)", group=groupRulebook)
+// Optional Design B: leg2 takes 50% profit at this R from original entry
+// (typical 3.0). Drawn only when useScaleInMode is also on. Null = no TP1.
+scaleInLeg2Tp1R          = input.float(3.0, "Scale-in leg2 TP1 (R, Design B)", minval=2.5, maxval=3.5, step=0.5, group=groupRulebook)
+showScaleInLines         = input.bool(true, "Show scale-in TP lines on chart", group=groupRulebook)
+
 
 manualRiskOk      = input.bool(false, "Risk 0.55% acknowledged", group=groupRulebook)
 manualTradesLeft  = input.int(3, "Trades today left", minval=0, maxval=10, group=groupRulebook)
@@ -292,6 +301,11 @@ var float rulebookScore        = 0.0
 var float rulebookEntry        = na
 var float rulebookStop         = na
 var float rulebookTarget       = na
+// Scale-in mode: 2R trigger (leg1 partial close + leg2 entry) and 4R final TP.
+// When useScaleInMode is off, both stay na and no markers are drawn.
+var float rulebookScaleInTrigger = na
+var float rulebookFinalTp        = na
+var float rulebookLeg2Tp1        = na
 var int   rulebookTouchBar     = -1
 
 var int   lastCleanSweepBar    = -1
@@ -1046,25 +1060,18 @@ if barstate.isconfirmed and not na(atr) and atr > 0
             if pdZone == "premium"
                 score += 1.0
             if score < rulebookScoreThreshold
-                continue
-            int activationPos = zone.activationIndex
-            if activationPos > bestObActivation or (activationPos == bestObActivation and proximity < bestProximity) or (activationPos == bestObActivation and proximity == bestProximity and zone.id < bestObId)
-                bestObId         := zone.id
-                bestObDir        := dirSign
-                bestObTop        := obTop
-                bestObBottom     := obBottom
-                bestObActivation := activationPos
-                bestScore        := score
-                bestEdgeDist     := proximity
-                bestBosId        := zone.linkedBosId
-                bestProximity    := proximity
-                bestReason       := "ok"
-
     if bestObId >= 0
         float entry      = bestObDir == 1 ? bestObTop : bestObBottom
         float slEdge     = bestObDir == 1 ? bestObBottom - atr * rulebookSlEdgeAtr : bestObTop + atr * rulebookSlEdgeAtr
         float slDistance = math.abs(entry - slEdge)
         float target     = bestObDir == 1 ? entry + rulebookMinRR * slDistance : entry - rulebookMinRR * slDistance
+        // Scale-in 2R/4R levels (Design A default). Only computed when toggle on.
+        // Both legs of scale-in math are validated against src/scale_in_exit.py.
+        // Mirrors Python ScaleInExit: scale_in_r=2.0, final_tp_r=4.0, leg2_lot=0.5.
+        float scaleInTrigger = useScaleInMode ? (bestObDir == 1 ? entry + 2.0 * slDistance : entry - 2.0 * slDistance) : na
+        float finalTp        = useScaleInMode ? (bestObDir == 1 ? entry + 4.0 * slDistance : entry - 4.0 * slDistance) : na
+        // Optional Design B leg2 TP1 at scaleInLeg2Tp1R (e.g. 3.0 = 3R).
+        float leg2Tp1        = useScaleInMode and scaleInLeg2Tp1R > 2.0 ? (bestObDir == 1 ? entry + scaleInLeg2Tp1R * slDistance : entry - scaleInLeg2Tp1R * slDistance) : na
         if manualGatesAllOk
             rulebookState := "chart-qualified"
             log.info("SMC chart_qualified @ " + str.tostring(bar_index) + " ob_id=" + str.tostring(bestObId) + " dir=" + str.tostring(bestObDir) + " score=" + str.tostring(bestScore))
@@ -1082,6 +1089,9 @@ if barstate.isconfirmed and not na(atr) and atr > 0
         rulebookEntry        := entry
         rulebookStop         := slEdge
         rulebookTarget       := target
+        rulebookScaleInTrigger := scaleInTrigger
+        rulebookFinalTp        := finalTp
+        rulebookLeg2Tp1        := leg2Tp1
         if low <= bestObTop and high >= bestObBottom
             rulebookTouchBar := bar_index
     else
@@ -1093,8 +1103,10 @@ if barstate.isconfirmed and not na(atr) and atr > 0
         rulebookEntry        := float(na)
         rulebookStop         := float(na)
         rulebookTarget       := float(na)
+        rulebookScaleInTrigger := float(na)
+        rulebookFinalTp        := float(na)
+        rulebookLeg2Tp1        := float(na)
         rulebookScore        := 0.0
-        rulebookRejection    := "no-qualifying-ob"
 
         if manualGatesAllOk
             rulebookState := "no-signal"
@@ -1112,14 +1124,23 @@ plot(showSwingsEffective ? displaySwingHigh : na, "Last swing high", color=color
 plot(showSwingsEffective ? displaySwingLow  : na, "Last swing low",  color=color.new(color.aqua, 70), linewidth=1, style=plot.style_linebr)
 plotshape(showStructureEffective and bosSignal == 1,  "Bull BOS",  shape.triangleup,   location.abovebar, color=color.lime, size=size.tiny, text="BOS")
 plotshape(showStructureEffective and bosSignal == -1, "Bear BOS",  shape.triangledown, location.belowbar, color=color.red,  size=size.tiny, text="BOS")
-plotshape(showStructureEffective and chochSignal == 1,  "Bull CHoCH", shape.circle, location.abovebar, color=color.new(color.lime, 0), size=size.tiny, text="C")
-plotshape(showStructureEffective and chochSignal == -1, "Bear CHoCH", shape.circle, location.belowbar, color=color.new(color.red, 0), size=size.tiny, text="C")
+plotchar(showDisplacement and expansionQualified ? high : na, "Qualified displacement", "D", location.abovebar, color=color.new(color.yellow, 0), size=size.tiny)
+
+// Scale-in exit levels (Design A: 2R trigger + 4R final TP; Design B: + 3R TP1).
+// All three lines stay na when useScaleInMode is off, so plot() emits nothing.
+// Lines use linebr style so they extend to the right edge until the next
+// qualifying OB replaces them. Do NOT use plot.style_circles — it would draw
+// markers on every bar where the level exists.
+plot(useScaleInMode and showScaleInLines ? rulebookScaleInTrigger : na, "Scale-in trigger (2R)", color=color.new(color.teal, 0), linewidth=2, style=plot.style_linebr)
+plot(useScaleInMode and showScaleInLines ? rulebookFinalTp        : na, "Scale-in final TP (4R)", color=color.new(color.fuchsia, 0), linewidth=2, style=plot.style_linebr)
+plot(useScaleInMode and showScaleInLines and not na(rulebookLeg2Tp1) ? rulebookLeg2Tp1 : na, "Scale-in leg2 TP1 (Design B)", color=color.new(color.orange, 60), linewidth=1, style=plot.style_linebr)
+
 plotchar(showDisplacement and expansionQualified ? high : na, "Qualified displacement", "D", location.abovebar, color=color.new(color.yellow, 0), size=size.tiny)
 
 //==============================================================================
 // Context table
 //==============================================================================
-var table ctx = table.new(position.top_right, 2, 11, bgcolor=color.new(color.black, 78))
+var table ctx = table.new(position.top_right, 2, 14, bgcolor=color.new(color.black, 78))
 if showContext and barstate.islast
     table.cell(ctx, 0, 0, "Profile",  text_color=color.white)
     table.cell(ctx, 1, 0, profile,     text_color=color.white)
@@ -1143,6 +1164,15 @@ if showContext and barstate.islast
     table.cell(ctx, 1, 9, lastPoolText, text_color=color.silver)
     table.cell(ctx, 0, 10, "Diag",   text_color=color.white)
     table.cell(ctx, 1, 10, lastDiagnostic, text_color=color.silver)
+
+    // Scale-in rows (only meaningful when useScaleInMode is on; show "—" otherwise)
+    table.cell(ctx, 0, 11, "SI 2R", text_color=color.white)
+    table.cell(ctx, 1, 11, useScaleInMode ? str.tostring(rulebookScaleInTrigger, format.mintick) : "—", text_color=color.teal)
+    table.cell(ctx, 0, 12, "Leg2 TP1", text_color=color.white)
+    table.cell(ctx, 1, 12, useScaleInMode and not na(rulebookLeg2Tp1) ? str.tostring(rulebookLeg2Tp1, format.mintick) : "—", text_color=color.orange)
+    table.cell(ctx, 0, 13, "SI 4R", text_color=color.white)
+    table.cell(ctx, 1, 13, useScaleInMode ? str.tostring(rulebookFinalTp, format.mintick) : "—", text_color=color.fuchsia)
+
 
 //==============================================================================
 // Alert conditions
