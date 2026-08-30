@@ -152,8 +152,22 @@ def render_live(
 
 
 def render_execution(db: BotDB, *, limit: int = 100) -> dict[str, Any]:
-    """Execution log (Phase 06 stub — execution_log is empty until P6)."""
-    return {"rows": [], "note": "Execution log populates after Phase 06"}
+    """Read execution_log rows for the dashboard.
+
+    Returns rows ordered by id DESC (newest first). Empty list is fine —
+    Phase 06 default executor is disabled, so until EXECUTOR_TRANSPORT=file
+    is configured + an Accept fires, this stays empty.
+    """
+    rows = db.list_executions(limit=limit)
+    out = []
+    for r in rows:
+        # SQLite Row -> dict + serialize datetimes for JSON.
+        d = dict(r)
+        for k, v in list(d.items()):
+            if isinstance(v, datetime):
+                d[k] = v.isoformat()
+        out.append(d)
+    return {"rows": out, "note": "Live execution_log data (Phase 06)"}
 
 
 def _list_signal_csvs(signal_dir: Path) -> list[dict[str, Any]]:

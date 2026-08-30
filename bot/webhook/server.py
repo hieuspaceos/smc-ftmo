@@ -36,6 +36,9 @@ from fastapi.responses import JSONResponse
 
 from bot.gates.state import GateStateStore
 from bot.gates.validator import Decision, Validator
+from bot.mt5_bridge.executor import build_executor, FileBridgeExecutor, DisabledExecutor
+from bot.mt5_bridge.ftmo_guard import FtmoGuard, GuardState
+from bot.mt5_bridge.signal_writer import SignalRecord, SignalAlreadyWrittenError, SignalExpiredError
 from bot.notify.discord import DiscordMirror, mirror_from_env
 from bot.notify.formatting import (
     ACCEPT_PREFIX,
@@ -267,6 +270,8 @@ async def _handle_telegram_callback(
     dispatcher: Any,
     validator: Validator,
     gate_store: GateStateStore,
+    executor: Any | None = None,
+    ftmo_guard: Any | None = None,
 ) -> JSONResponse:
     """Process a Telegram inline button press.
 
@@ -305,7 +310,7 @@ async def _handle_telegram_callback(
         )
 
     if callback_data.startswith(ACCEPT_PREFIX):
-        return await _accept_signal(db, dispatcher, validator, gate_store, callback_data, decision)
+        return await _accept_signal(db, dispatcher, validator, gate_store, executor, ftmo_guard, callback_data, decision)
 
     if callback_data.startswith(REJECT_PREFIX):
         return await _reject_signal(db, dispatcher, gate_store, callback_data, decision)
@@ -314,11 +319,85 @@ async def _handle_telegram_callback(
 
 
 
+async def _execute_via_executor(
+    db: Any,
+    payload: Any,
+    signal_id: str,
+    actor: str,
+    executor: Any,
+    ftmo_guard: Any,
+) -> dict[str, Any]:
+    """Hand an accepted signal off to the MT5 executor.
+
+    Always records a row in execution_log so audit + /api/execution can
+    surface it. Returns a small dict for the HTTP response.
+
+    Transport selection is already baked into the executor instance
+    (DisabledExecutor / FileBridgeExecutor). FTMO guard runs first.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    from bot.mt5_bridge.signal_writer import SignalRecord
+
+    if not executor or not getattr(executor, "enabled", False):
+        # Disabled path: record a 'queued' row with transport='disabled' so
+        # the dashboard shows the signal was accepted but not executed.
+        payload_json = payload.model_dump_json() if hasattr(payload, "model_dump_json") else str(payload)
+        db.upsert_execution(
+            signal_id=signal_id, transport="disabled", state="queued",
+            payload=payload_json,
+        )
+        return {"transport": "disabled", "state": "queued", "message": "transport not configured"}
+
+    # Phase 06: FTMO guard snapshot (real DB-backed in Phase 06.5).
+    # For now, permissive default; trader may override via env later.
+    guard_state = GuardState(daily_pnl=0.0, trades_today=0, open_positions={})
+    guard_check = ftmo_guard.check(guard_state, payload.symbol) if ftmo_guard else None
+    if guard_check is not None and not guard_check.allowed:
+        db.upsert_execution(
+            signal_id=signal_id, transport="file", state="rejected",
+            payload=str(guard_check.reason),
+            error="ftmo_guard_blocked:" + guard_check.limit_name,
+        )
+        return {
+            "transport": "file", "state": "rejected",
+            "reason": guard_check.reason, "limit": guard_check.limit_name,
+        }
+
+    # Build SignalRecord from the AlertPayload.
+    record = SignalRecord.from_alert_payload(
+        signal_id=signal_id,
+        symbol=payload.symbol,
+        side=payload.dir,
+        level=payload.level,
+        bar_time=payload.received_at or _dt.now(_tz.utc),
+        ob_id=payload.ob_id,
+        bos_id=payload.bos_id,
+        approved_by=actor,
+        guard_snapshot={
+            "trades_today": guard_state.trades_today,
+            "daily_pnl": guard_state.daily_pnl,
+            "open_position": guard_state.open_position(payload.symbol),
+        },
+    )
+    ok, msg = executor.execute(record)
+    state = "queued" if ok else "failed"
+    db.upsert_execution(
+        signal_id=signal_id,
+        transport=executor.name,
+        state=state,
+        payload=record.to_json() if hasattr(record, "to_json") else None,
+        error=None if ok else msg,
+    )
+    return {"transport": executor.name, "state": state, "message": msg}
+
+
 async def _accept_signal(
     db: BotDB,
     dispatcher: Any,
     validator: Validator,
     gate_store: GateStateStore,
+    executor: Any | None,
+    ftmo_guard: Any | None,
     callback_data: str,
     decision: CallbackDecision,
 ) -> JSONResponse:
@@ -379,9 +458,17 @@ async def _accept_signal(
     if msg_id is not None:
         await dispatcher.edit_signal(msg_id, payload, decision="accept", actor=decision.actor)
     gate_store.clear_signal_specific()
-    return JSONResponse(
-        {"decision": "accepted", "signal_id": signal_id, "actor": decision.actor},
+    # Phase 06: hand off to MT5 executor (disabled by default; transport='file' writes JSON)
+    exec_result = await _execute_via_executor(
+        db=db, payload=payload, signal_id=signal_id, actor=decision.actor,
+        executor=executor, ftmo_guard=ftmo_guard,
     )
+    return JSONResponse({
+        "decision": "accepted",
+        "signal_id": signal_id,
+        "actor": decision.actor,
+        "execution": exec_result,
+    })
 
 
 async def _reject_signal(
@@ -477,6 +564,8 @@ def create_app(
     mirror: Any | None = None,
     validator: Validator | None = None,
     gate_store: GateStateStore | None = None,
+    executor: Any | None = None,
+    ftmo_guard: FtmoGuard | None = None,
 ) -> FastAPI:
     settings = settings or AppSettings.from_env()
     limiter = _RateLimiter(settings.security.rate_limit_per_min)
@@ -490,6 +579,10 @@ def create_app(
         dispatcher = dispatcher_from_env()
     if mirror is None:
         mirror = mirror_from_env()
+    if executor is None:
+        executor = build_executor(db=db)
+    if ftmo_guard is None:
+        ftmo_guard = FtmoGuard()
     if gate_store is None:
         gate_store = GateStateStore(active_db)
     if validator is None:
@@ -506,6 +599,8 @@ def create_app(
         app.state.mirror = mirror
         app.state.validator = validator
         app.state.gate_store = gate_store
+        app.state.executor = executor
+        app.state.ftmo_guard = ftmo_guard
         logger.info(
             "bot webhook ready: db=%s telegram=%s discord=%s",
             settings.db_path,
@@ -540,6 +635,8 @@ def create_app(
     app.state.mirror = mirror
     app.state.validator = validator
     app.state.gate_store = gate_store
+    app.state.executor = executor
+    app.state.ftmo_guard = ftmo_guard
 
     async def _verify_source(request: Request) -> None:
         client_ip = extract_client_ip(
@@ -648,7 +745,10 @@ def create_app(
         request: Request,
         _: None = Depends(_verify_source),
     ) -> JSONResponse:
-        return await _handle_telegram_callback(request, active_db, dispatcher, validator, gate_store)
+        return await _handle_telegram_callback(
+            request, active_db, dispatcher, validator, gate_store,
+            executor, ftmo_guard,
+        )
 
     @app.post("/telegram/command")
     async def telegram_command(

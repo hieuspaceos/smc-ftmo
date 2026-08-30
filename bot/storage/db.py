@@ -308,3 +308,68 @@ class BotDB:
                 (trade_date,),
             )
             return [dict(r) for r in cur.fetchall()]
+
+    # --- Phase 06: execution_log CRUD ---
+    def upsert_execution(
+        self,
+        signal_id: str,
+        transport: str,
+        state: str,
+        *,
+        payload: str | None = None,
+        mt5_ticket: str | None = None,
+        fill_price: float | None = None,
+        error: str | None = None,
+    ) -> int:
+        """Insert or update execution_log row keyed by (signal_id, transport).
+
+        Returns the row id. If a row already exists for this (signal_id,
+        transport), updates state + ack metadata + updated_at.
+        """
+        import json as _json
+        from datetime import datetime as _dt, timezone as _tz
+        now = _dt.now(_tz.utc).isoformat()
+        with self._conn_ctx() as conn:
+            cur = conn.execute(
+                "SELECT id FROM execution_log WHERE signal_id = ? AND transport = ?",
+                (signal_id, transport),
+            )
+            row = cur.fetchone()
+            if row is None:
+                cur = conn.execute(
+                    """INSERT INTO execution_log
+                       (signal_id, transport, state, payload, mt5_ticket,
+                        fill_price, error, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        signal_id, transport, state, payload,
+                        mt5_ticket, fill_price, error, now, now,
+                    ),
+                )
+                return int(cur.lastrowid)
+            conn.execute(
+                """UPDATE execution_log SET state = ?, payload = ?, mt5_ticket = ?,
+                   fill_price = ?, error = ?, updated_at = ? WHERE id = ?""",
+                (state, payload, mt5_ticket, fill_price, error, now, row["id"]),
+            )
+            return int(row["id"])
+
+    def list_executions(
+        self,
+        limit: int = 100,
+        transport: str | None = None,
+        state: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM execution_log WHERE 1=1"
+        params: list[Any] = []
+        if transport:
+            sql += " AND transport = ?"
+            params.append(transport)
+        if state:
+            sql += " AND state = ?"
+            params.append(state)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(int(limit))
+        with self._conn_ctx() as conn:
+            cur = conn.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
