@@ -2,7 +2,7 @@
 status: active
 title: "SMC Engine Module Reference"
 created: "2026-08-29"
-updated: "2026-08-29"
+updated: "2026-08-31"
 ---
 
 # SMC Engine Module Reference
@@ -213,6 +213,6 @@ Current strategy knobs relevant to the engine:
 | `strategy.bias_mode` | `strict | h4_only | any` |
 | `strategy.regime_mode` | `off | on | auto` |
 | `strategy.promotion_lookback_bars` | breaker promotion distance |
-| `strategy.partial_tp` | TP ladder profile |
-| `strategy.displacement_atr_mult` | range-expansion multiplier |
-| `pd_lookback` | dealing-range context lookback |
+| `strategy.partial_tp` | TP ladder profile (used when `exit_mode = ladder`) |
+| `strategy.exit_mode` | `ladder` (PartialTPExit) \| `scale_in` (ScaleInExit 2R/4R). Default `ladder`. Scale-in: +23% PnL, -44% DD vs ladder (EURUSD 2016-2026 backtest). See `src/scale_in_exit.py` and `journal/rule-book.md` §1. |
+| `strategy.leg2_tp1_r` | Optional float. Scale-in Design B only: leg2 takes 50% profit at this R from original entry (e.g. 3.0). Default `null` = Design A (leg2 runs full to 4R). |
