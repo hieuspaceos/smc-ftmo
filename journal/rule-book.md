@@ -46,6 +46,44 @@ Setup học mặc định (khớp app, **đóng băng 8 tuần**):
 - 30% tại 3R → giữ SL ở BE
 - 30% tại 4R
 
+### Exit mode: scale-in (alternative, milestone 2026-08-31)
+
+Config opt-in: `strategy.exit_mode = "scale_in"` (default `ladder`). Scale-in
+chỉ dùng cho bot và backtest khi nghiên cứu. Khi trade tay 8 tuần này vẫn
+giữ ladder 40/30/30 — không áp scale-in lên chart.
+
+**State machine (long, mirror cho short):**
+
+1. Entry: leg1 = 1.0 lot @ OB top, SL = ob_bottom - 0.2× ATR (1R)
+2. Hit 2R: đóng 0.5 lot leg1 → lock +1R; mở leg2 = 0.5 lot @ 2R; move SL leg1
+   rem → entry (BE)
+3. Hit 4R: đóng leg1 rem @ 4R (+2R) + đóng leg2 @ 4R (+1R) = +4R tổng
+4. Cascade về entry: leg1 rem = 0 (BE) + leg2 = -1R → 0R tổng
+5. SL trước 2R: -1R (leg2 chưa mở)
+
+**Risk profile scale-in (backtest EURUSD 2016-2026, 1326 lệnh):**
+
+| Metric | Ladder | Scale-in |
+|---|---|---|
+| Avg R | +0.684R | **+0.824R** |
+| Profit factor | 1.88 | **2.74** |
+| Max DD | 5.69% | **3.21%** |
+| Winrate | 52.1% | 32.4% |
+| Total PnL | $488,908 | **$601,150** |
+
+Scale-in tăng +23% PnL, giảm -44% DD so với ladder, nhưng giảm winrate vì
+trade hit 4R (đếm win) ít hơn trade cascade BE (không tính win/loss). Triết
+lý scale-in: **R/R và payoff quan trọng hơn winrate**.
+
+**Overshoot-safe:** PnL luôn cap tại đúng exit price, không tính theo bar
+close. SL gap-through không over-debit; TP overshoot không over-credit. Đã
+regress 11 unit test.
+
+**Design B (optional, không dùng production):** leg2 chốt 50% tại 3R (TP1
+intermediate), move SL leg2 rem → 3R để lock profit. Backtest Design B cho
+winrate cao hơn (38% vs 32%) nhưng PnL thấp hơn (-3.2%) do giảm max profit
+ở hit-4R. Giữ làm feature flag (`leg2_tp1_r: null` = Design A).
+
 **SL:** ngoài cạnh OB + `0.2× ATR` buffer. Không đặt SL sát mép zone.
 
 ---

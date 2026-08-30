@@ -30,6 +30,15 @@ strategy:
     - {pct: 0.30, r: 3.0, move_sl_to: entry}   # BE giữ
     - {pct: 0.30, r: 4.0, move_sl_to: entry}
 
+  # Exit mode: 'ladder' (PartialTPExit default) | 'scale_in' (ScaleInExit 2R/4R)
+  # Backtest validated: scale_in +23% PnL, -44% DD vs ladder trên EURUSD 2016-2026.
+  # Manual trade 8 tuần vẫn dùng ladder. Bot/backtest opt-in.
+  exit_mode: ladder
+  # Optional Design B: leg2 takes 50% profit at this R from original entry.
+  # null/omitted = Design A (leg2 runs full to 4R). Set to 3.0 for Design B.
+  # Design B: winrate +5.7pp, DD -0.5pp, nhưng PnL -3.2% vs Design A.
+  leg2_tp1_r: null
+
   sl_atr_buffer: 0.2            # SL thêm 0.2× ATR buffer dưới OB
 
 # Confluence scoring

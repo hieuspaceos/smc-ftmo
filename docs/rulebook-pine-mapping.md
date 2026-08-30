@@ -2,7 +2,8 @@
 status: active
 title: "Rule Book → Pine Mapping"
 created: "2026-08-29"
-updated: "2026-08-30"
+updated: "2026-08-31"
+version: "v1.3"
 
 # Rule Book → Pine Mapping
 
@@ -165,5 +166,32 @@ column never exceeds 5 and any `ok` row is non-zero.
 
 ## Confirmed Events
 
-- Mọi final signal chỉ trên `barstate.isconfirmed`.
 - HTF values dùng `barmerge.lookahead_on` + `[1]` offset để không repaint.
+
+## Scale-in Exit Mode (§1 addendum, opt-in)
+
+Scale-in is **not** part of the 8-week manual trade protocol (ladder 40/30/30
+vẫn là mặc định cho manual). Pine hỗ trợ nó như một **visual layer** để
+validate vị trí 2R/4R khi đọc chart và đối chiếu với bot config.
+
+| Pine input | Maps to | Test |
+|---|---|---|
+| `useScaleInMode = false` (default) | `config.strategy.exit_mode == "ladder"` | (no test — toggle is user-driven) |
+| `useScaleInMode = true` | `config.strategy.exit_mode == "scale_in"` | (no test) |
+| `scaleInLeg2Tp1R = 3.0` (default) | `config.strategy.leg2_tp1_r == 3.0` (Design B) | `test_design_b_long_tp1_then_tp4r` |
+| `scaleInLeg2Tp1R` left at default with `useScaleInMode = false` | Design A (no leg2 TP1) | `test_design_b_default_unchanged` |
+
+**Pine visual → Python math invariants (Design A):**
+
+| Pine line | Math invariant | Python equivalent |
+|---|---|---|
+| Teal: `rulebookScaleInTrigger` | `entry + 2.0 * slDistance` | `ScaleInExit.scale_in_r = 2.0` |
+| Fuchsia: `rulebookFinalTp` | `entry + 4.0 * slDistance` | `ScaleInExit.final_tp_r = 4.0` |
+| Orange: `rulebookLeg2Tp1` | `entry + scaleInLeg2Tp1R * slDistance` | `ScaleInExit.leg2_tp1_r` |
+
+**Out of scope (Pine v1.3):**
+
+- Pine không track leg1/leg2 lots runtime. Chỉ vẽ levels.
+- Cascade / SL hit scenarios không có chart marker (chỉ có line cho kịch bản running).
+- Pine không emit alert cho scale-in events (chỉ chart_qualified/watch/blocked cho entry OB).
+
