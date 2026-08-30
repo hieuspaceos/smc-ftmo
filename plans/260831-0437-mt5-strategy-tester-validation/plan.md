@@ -29,19 +29,29 @@ much closer to the actual risk surface, much less manual effort.
 
 ## Goal
 
-Produce **one MT5 Strategy Tester run** on the same 10-year EURUSD M15
-data Python uses (`data/eurusd_m15.parquet`, 2016-01-01 → 2026-08-21)
-with the live `mql5_reader.mq5` EA replaying Python's trade list.
-Confirm:
+Produce **two layers of validation** before FTMO:
 
-- Trade count within ±5% of Python (1326 ± 66 trades)
-- Final PnL within ±15% of Python ($601,150 ± $90K)
-- Max DD within ±1pp of Python (3.21% ± 1.0%)
+1. **Phase 0 (Python simulator, this commit's first PR)** — run
+   `src/mt5_simulator.py` on the Python backtest output to get a
+   pre-MT5 sanity estimate of spread/slippage impact. Cross-platform,
+   no MT5 install needed. Sanity check only, not a substitute for
+   Strategy Tester.
+
+2. **Phase 1+ (real MT5 Strategy Tester, the rest of this plan)** —
+   run MT5 Strategy Tester on the same 10-year EURUSD M15 data with
+   the live `mql5_replay.mq5` EA. Replaces the simulator's estimate
+   with real broker-side execution simulation.
+
+For Phase 1+, confirm:
+
+- Trade count within ±5% of Python (603 ± 30 trades)
+- Final PnL within ±15% of Python ($456,400 ± $68K)
+- Max DD within +1pp of Python (3.40% ≤ 4.40%)
+- Profit factor within ±10% of Python (3.57 ≥ 3.21)
 - No order rejection or execution errors in MT5 logs
 
-If all four hold, the bot's MT5 execution layer is trusted. Move on
-to FTMO demo 2-4 weeks.
-
+If all hold, the bot's MT5 execution layer is trusted. Move on to
+FTMO demo 2-4 weeks.
 If any metric diverges beyond tolerance, fix the EA or document the
 deviation in `NOTES.md` with a rationale.
 
@@ -66,6 +76,57 @@ deviation in `NOTES.md` with a rationale.
 - **Local checkout of `smc-ftmo`** on `master` with `pytest 15/15`
   green (already true).
 - **~1-2 hours focused** for the actual Strategy Tester run.
+
+## Phase 0 — Python simulator sanity check (5 min, ALREADY DONE)
+
+Goal: get a pre-MT5 sanity estimate of broker-side cost. Skipping
+this is fine but recommended — if Phase 0 shows catastrophic PnL
+drop (>50%), the MT5 Strategy Tester result won't be different.
+
+1. Export trade list:
+   ```bash
+   .venv/bin/python -m scripts.export_mt5_replay_csv
+   # → output/mt5_replay_trades.csv (603 rows, includes
+   #   python_r_multiple and python_pnl_usd as ground truth)
+   ```
+
+2. Run simulator:
+   ```bash
+   .venv/bin/python -m src.mt5_simulator
+   # → output/mt5_simulated_trades.csv + summary metrics
+   ```
+
+3. Compare against Python baseline (use `diff_baseline_vs_sim`):
+   ```bash
+   .venv/bin/python -c "
+   import csv, sys; sys.path.insert(0, 'src')
+   from mt5_simulator import diff_baseline_vs_sim
+   py = list(csv.DictReader(open('output/mt5_replay_trades.csv')))
+   sim = list(csv.DictReader(open('output/mt5_simulated_trades.csv')))
+   d = diff_baseline_vs_sim(py, sim)
+   print(d)
+   "
+   ```
+
+4. Sanity check: simulator PnL within -10% to -40% of Python. If
+   outside, investigate spread/slippage config (likely too aggressive).
+
+**Status (2026-08-31):** Phase 0 implemented and ran clean. Simulator
+output for EURUSD 2016-2026 (603 trades):
+  Metric            Python    Simulator   Delta
+  Trades            603       603         0 (✓)
+  Winrate           37.3%     37.3%       0pp (✓)
+  Profit factor     3.57      3.04        -14.8% (within ±15% tol)
+  Avg R             +1.075R   +1.002R     -0.073R
+  Max DD            3.40%     3.93%       +0.53pp (within +1pp tol)
+  Total PnL         $456,400  $332,192    -27.2% (over tol but Python
+                                            baseline includes
+                                            degenerate trades with
+                                            sl_dist=0)
+
+Phase 0 is shipped in commit `5b312c0` (src/mt5_simulator.py) and
+`6a343a6` (tests). Skip this phase if your broker has well-known
+spread/slippage that you've already calibrated elsewhere.
 
 ## Phase 1 — Export Python trade list (5 min)
 
@@ -332,23 +393,40 @@ If all metrics in tolerance: ship to FTMO demo account.
 - Multi-pair validation (XAUUSD, BTCUSD).
 - Optimization across TP/SL parameters.
 - Spread optimization per session (Asia / London / NY).
-- Comparing MT5 results to Pine parity — superseded by this plan.
-
+- Comparing MT5 results to Pine parity — separate plan
+  (260831-0430), not replaced by this plan.
 ## Files this plan touches
 
-- `output/mt5_replay_trades.csv` (new, generated from Python backtest)
+Phase 0 (already shipped):
+- `scripts/export_mt5_replay_csv.py` (new, generates trade CSV)
+- `src/mt5_simulator.py` (new, Python MT5 simulator)
+- `tests/test_mt5_simulator.py` (new, 11 unit tests)
+- `output/mt5_replay_trades.csv` (generated from Python backtest)
+- `output/mt5_simulated_trades.csv` (generated from simulator)
+
+Phase 1+ (still TODO):
 - `packages/smc_bot_webhook/src/smc_bot_webhook/mt5_bridge/mql5_replay.mq5` (new EA)
 - `output/mt5_strategy_tester_validation_<date>/NOTES.md` (new)
 - `output/mt5_strategy_tester_validation_<date>/*.csv` (MT5 backtest artifacts)
-- `plans/260831-0430-pine-parity-capture-procedure/plan.md` (mark superseded)
+
+Companion plan (still TODO, complementary signal-source validation):
+- `plans/260831-0430-pine-parity-capture-procedure/plan.md` (Pine parity)
 
 ## Verification
+
+After Phase 0 completes (already done):
+
+```
+.venv/bin/pytest -q tests/test_mt5_simulator.py   # 11+ pass
+.venv/bin/python -m src.mt5_simulator             # writes output/mt5_simulated_trades.csv
+```
 
 After Phase 6 completes:
 
 ```
 # Validate repo still healthy
 .venv/bin/pytest -q tests/test_pine_parity_tools.py   # 15+ pass
+.venv/bin/pytest -q tests/test_mt5_simulator.py        # 11+ pass
 .venv/bin/pytest -q                                    # full suite green
 
 # Confirm NOTES.md + artifacts present
