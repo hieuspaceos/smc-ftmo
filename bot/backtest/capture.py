@@ -207,8 +207,9 @@ def _parse_pine_line(line: str) -> AlertPayload | None:
     if not m:
         return None
     try:
-        from bot.webhook.payload import normalize_tf
+        from bot.webhook.payload import normalize_dir, normalize_tf
         tf_canonical = normalize_tf(m.group("tf"))
+        dir_normalized = normalize_dir(m.group("dir"))
 
         ob_id = -1
         bos_id = -1
@@ -233,7 +234,7 @@ def _parse_pine_line(line: str) -> AlertPayload | None:
             event=m.group("event"),
             symbol=m.group("symbol"),
             tf=tf_canonical,
-            dir=m.group("dir"),
+            dir=dir_normalized,
             level=float(m.group("level")),
             bar_time=int(m.group("bar_time")),
             ob_id=ob_id,

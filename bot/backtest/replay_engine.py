@@ -145,11 +145,18 @@ def _build_signals(
     signals: list[AlertPayload] = []
     if bos.empty:
         return signals
+    # Validate index is DatetimeIndex before iterating (avoid bar_time=0 for
+    # non-datetime indices, which would later be rejected by AlertPayload).
+    idx = ohlc.index
+    if not isinstance(idx, pd.DatetimeIndex):
+        raise ValueError(
+            f"replay requires a DatetimeIndex (got {type(idx).__name__}); "
+            "call ohlc.index = pd.DatetimeIndex(...) before replay_from_ohlc()."
+        )
     for _, row in bos.iterrows():
         bar_idx = int(row["bar_index"])
-        bar_time = int(ohlc.index[bar_idx].timestamp()) if hasattr(ohlc.index[bar_idx], "timestamp") else 0
-        if bar_time == 0 and isinstance(ohlc.index[bar_idx], pd.Timestamp):
-            bar_time = int(ohlc.index[bar_idx].tz_localize(None).timestamp() if ohlc.index[bar_idx].tzinfo is None else ohlc.index[bar_idx].timestamp())
+        ts = idx[bar_idx]
+        bar_time = int(ts.timestamp())
         event = "bos" if row["kind"] == "bos" else "choch"
         direction = row.get("dir", "long") if row["kind"] == "bos" else (
             "short" if row.get("dir") == "long" else "long"
