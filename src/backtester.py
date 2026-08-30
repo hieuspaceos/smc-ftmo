@@ -28,6 +28,7 @@ from premium_discount import pd_series
 from risk_manager import FTMOGuard, calculate_lot
 from smc_signals import SMCSignals, calculate_atr
 from strategy import PartialTPExit, check_entry, pip_value_for_pair
+from scale_in_exit import ScaleInExit
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +220,13 @@ def run_backtest(
         tp_stages = raw_tp_stages
     else:
         tp_stages = PartialTPExit.DEFAULT_STAGES
+
+    # Exit mode: 'ladder' (default PartialTPExit) or 'scale_in' (ScaleInExit).
+    # Backward-compatible: existing configs default to 'ladder' (unchanged behavior).
+    exit_mode = strat_cfg.get("exit_mode", config.get("exit_mode", "ladder"))
+    if exit_mode not in ("ladder", "scale_in"):
+        exit_mode = "ladder"
+
 
 
     filters = config.get("filters", {}) if isinstance(config.get("filters"), dict) else {}
@@ -539,21 +547,64 @@ def run_backtest(
 
             actions = exit_obj.update(bar_close)
             for action in actions:
-                tag, val = action[0], action[1]
+                tag = action[0]
+                # Actions vary in length: ('close_leg2',) is 1-tuple,
+                # ('close_pct', frac) is 2-tuple,
+                # ('open_leg2', lot, sl, tp) is 4-tuple.
+                # Read payload fields only when the branch needs them.
+                r_now_price = (bar_close - open_pos["entry"]) / max(1e-12, abs(open_pos["entry"] - open_pos["sl"]))
+                if open_pos["side"] == "short":
+                    r_now_price = -r_now_price
                 if tag == "close_pct":
+                    val = action[1]
                     orig_frac = float(val) * pos_rem
                     r_now = exit_obj.r_multiple
-                    equity += orig_frac * r_now * risk_amount
-                    pos_rem *= max(0.0, 1.0 - float(val))
-                    open_pos["pos_remaining"] = pos_rem
-                    open_pos["realized_r"] = open_pos.get("realized_r", 0.0) + orig_frac * r_now
+                    if exit_mode != "scale_in":
+                        # Ladder mode: backtester tracks realized_r.
+                        equity += orig_frac * r_now * risk_amount
+                        pos_rem *= max(0.0, 1.0 - float(val))
+                        open_pos["pos_remaining"] = pos_rem
+                        open_pos["realized_r"] = open_pos.get("realized_r", 0.0) + orig_frac * r_now
+                    # scale_in mode: ScaleInExit tracks realized_r internally;
+                    # equity is updated only on full close via the 'closed' branch below.
                 elif tag == "move_sl":
-                    open_pos["sl"] = float(val)
+                    open_pos["sl"] = float(action[1])
+                elif tag == "open_leg2":
+                    # Scale-in: register leg2 with given lot/sl/tp; no equity change.
+                    # Action shape is ("open_leg2", lot, sl, tp) — a 4-tuple, so the
+                    # extra fields live at action[1:].
+                    leg2_lot, leg2_sl, leg2_tp = action[1], action[2], action[3]
+                    open_pos["leg2"] = {
+                        "lot": float(leg2_lot),
+                        "sl": float(leg2_sl),
+                        "tp": float(leg2_tp),
+                        "entry_price": float(bar_close),
+                    }
+                elif tag == "close_leg2":
+                    # Scale-in leg2 closure: realized_r already tracked inside exit_obj,
+                    # so this tag is a no-op accounting-wise; PnL flows through close_pct
+                    # and the existing 'closed' handler.
+                    pass
+                elif tag == "close_leg2_partial":
+                    # Design B: 50% leg2 closed at TP1. realized_r already
+                    # credited inside exit_obj; this just records the partial
+                    # in the position dict for inspection.
+                    open_pos["leg2_partial_closed"] = float(action[1])
+                elif tag == "move_leg2_sl":
+                    # Design B: move remaining leg2 SL up to lock profit.
+                    if "leg2" in open_pos:
+                        open_pos["leg2"]["sl"] = float(action[1])
+                elif tag == "leg2_tp1":
+                    # Design B: TP1 marker (informational; no accounting change).
+                    open_pos["leg2_tp1_hit"] = True
                 elif tag == "closed":
-                    r_final = open_pos.get("realized_r", exit_obj.r_multiple)
+                    r_final = (
+                        exit_obj.r_multiple
+                        if exit_mode == "scale_in"
+                        else open_pos.get("realized_r", exit_obj.r_multiple)
+                    )
                     pnl = r_final * risk_amount
                     trades.append({
-                        "pair": pair,
                         "side": open_pos["side"],
                         "entry": open_pos["entry"],
                         "exit_price": bar_close,
@@ -571,13 +622,20 @@ def run_backtest(
                         "sweep_clean": int(open_pos.get("sweep_clean", 0)),
                         "premium_discount": open_pos.get("pd_zone", "neutral"),
                         "first_test": int(open_pos.get("first_test", 0)),
-                        "exit_reason": val,
+                        "exit_reason": action[1] if len(action) > 1 else "",
                         "session": "london",
                         "timestamp_entry": open_pos.get("timestamp_entry"),
                         "timestamp_exit": str(ts),
                         "setup_type": "OB",
                     })
                     guard.record_trade(r_final)
+                    # Apply final PnL to equity. Ladder mode already credited
+                    # partial closes in the 'close_pct' branch above, so we add
+                    # only the residual (r_final - open_pos.realized_r). Scale_in
+                    # mode credits nothing during the trade, so we add the full
+                    # r_final here. Either way: equity += r_final - prior_realized.
+                    prior_realized = open_pos.get("realized_r", 0.0) if exit_mode != "scale_in" else 0.0
+                    equity += (r_final - prior_realized) * risk_amount
                     open_pos = None
                     break
 
@@ -592,13 +650,26 @@ def run_backtest(
                         equity_curve.append((ts, equity))
                         continue
                     lot = calculate_lot(account_size, risk_per_trade, sl_dist, pip_value)
-                    exit_obj = PartialTPExit(
-                        entry=entry_info["entry"],
-                        sl=entry_info["sl"],
-                        side=entry_info["side"],
-                        atr_buffer=sl_atr_buffer,
-                        tp_stages=tp_stages,
-                    )
+                    if exit_mode == "scale_in":
+                        # Design B (optional): leg2 takes 50% profit at leg2_tp1_r.
+                        # Opt-in via config: exit_mode=='scale_in' AND
+                        # scale_in_cfg.get('leg2_tp1_r') is set.
+                        leg2_tp1_r = config.get("leg2_tp1_r")
+                        exit_obj = ScaleInExit(
+                            entry=entry_info["entry"],
+                            sl=entry_info["sl"],
+                            side=entry_info["side"],
+                            leg2_tp1_r=leg2_tp1_r,
+                        )
+                    else:
+                        exit_obj = PartialTPExit(
+                            entry=entry_info["entry"],
+                            sl=entry_info["sl"],
+                            side=entry_info["side"],
+                            atr_buffer=sl_atr_buffer,
+                            tp_stages=tp_stages,
+                        )
+
                     open_pos = {
                         **entry_info,
                         "lot": lot,
