@@ -45,6 +45,7 @@ rulebookEntryProximityAtr= input.float(1.5, "Entry proximity ATR", minval=0.1, s
 rulebookSlEdgeAtr        = input.float(0.2, "SL edge buffer ATR", minval=0.0, step=0.05, group=groupRulebook)
 rulebookSlMaxAtr         = input.float(1.2, "Max SL distance ATR", minval=0.1, step=0.1, group=groupRulebook)
 rulebookMinRR            = input.float(2.0, "Minimum 2R target", minval=0.5, step=0.5, group=groupRulebook)
+useDynamicAlertPayload = input.bool(false, "Use dynamic alert payload (P0 webhook)", group=groupRulebook)
 
 manualRiskOk      = input.bool(false, "Risk 0.55% acknowledged", group=groupRulebook)
 manualTradesLeft  = input.int(3, "Trades today left", minval=0, maxval=10, group=groupRulebook)
@@ -1145,7 +1146,30 @@ if showContext and barstate.islast
 
 //==============================================================================
 // Alert conditions
-//==============================================================================
+f_make_alert_payload(string event, string sym, string tf, string dirStr, float lvl, int btime, int obId, int bosId, string st, string rsn) =>
+    "SMC|v1|event=" + event + "|symbol=" + sym + "|tf=" + tf + "|dir=" + dirStr + "|level=" + str.tostring(lvl, format.mintick) + "|bar_time=" + str.tostring(btime) + "|ob_id=" + str.tostring(obId) + "|bos_id=" + str.tostring(bosId) + "|state=" + st + "|reason=" + rsn
+
+// Dynamic alerts: only emitted when toggle is enabled (P0 webhook payload)
+if useDynamicAlertPayload
+    // BOS / CHoCH state transitions
+    if bosSignal == 1 or bosSignal == -1
+        alert(f_make_alert_payload("bos", syminfo.ticker, timeframe.period, bosSignal == 1 ? "long" : "short", nz(brokenLevel, close), time, -1, -1, rulebookState, "structure_break"), alert.freq_once_per_bar_close)
+    if chochSignal == 1 or chochSignal == -1
+        alert(f_make_alert_payload("choch", syminfo.ticker, timeframe.period, chochSignal == 1 ? "long" : "short", nz(brokenLevel, close), time, -1, -1, rulebookState, "character_shift"), alert.freq_once_per_bar_close)
+    if (bosSignal == 1 or bosSignal == -1) and not na(brokenLevel)
+        alert(f_make_alert_payload("ob_activated", syminfo.ticker, timeframe.period, bosSignal == 1 ? "long" : "short", brokenLevel, time, rulebookObId, -1, rulebookState, "ob_touch"), alert.freq_once_per_bar_close)
+    if (lastSweepText != "none") and (lastSweepText != (lastSweepText[1] == "" ? "none" : lastSweepText[1]))
+        alert(f_make_alert_payload("sweep", syminfo.ticker, timeframe.period, lastCleanSweepDir == 1 ? "long" : lastCleanSweepDir == -1 ? "short" : "none", nz(lastCleanSweepLevel, close), time, -1, -1, rulebookState, "liquidity_sweep"), alert.freq_once_per_bar_close)
+    if (lastPoolText != "none") and (lastPoolText != (lastPoolText[1] == "" ? "none" : lastPoolText[1]))
+        alert(f_make_alert_payload("pool", syminfo.ticker, timeframe.period, "none", close, time, -1, -1, rulebookState, "pool_event"), alert.freq_once_per_bar_close)
+    if rulebookState == "chart-qualified" and rulebookState[1] != "chart-qualified"
+        alert(f_make_alert_payload("chart_qualified", syminfo.ticker, timeframe.period, rulebookObDir == 1 ? "long" : rulebookObDir == -1 ? "short" : "none", nz(rulebookEntry, close), time, rulebookObId, -1, rulebookState, "candidate_ready"), alert.freq_once_per_bar_close)
+    if rulebookState == "watch" and rulebookState[1] != "watch"
+        alert(f_make_alert_payload("watch", syminfo.ticker, timeframe.period, rulebookObDir == 1 ? "long" : rulebookObDir == -1 ? "short" : "none", nz(rulebookEntry, close), time, rulebookObId, -1, rulebookState, rulebookRejection), alert.freq_once_per_bar_close)
+    if rulebookState == "blocked" and rulebookState[1] != "blocked"
+        alert(f_make_alert_payload("blocked", syminfo.ticker, timeframe.period, rulebookObDir == 1 ? "long" : rulebookObDir == -1 ? "short" : "none", nz(rulebookEntry, close), time, rulebookObId, -1, rulebookState, rulebookRejection), alert.freq_once_per_bar_close)
+
+// Fallback alertcondition() (always on) for human-readable TradingView alerts
 alertcondition(bosSignal == 1 or bosSignal == -1, "SMC BOS", "SMC BOS fired")
 alertcondition(chochSignal == 1 or chochSignal == -1, "SMC CHoCH", "SMC CHoCH fired")
 alertcondition((bosSignal == 1 or bosSignal == -1) and not na(brokenLevel), "SMC OB activated", "SMC order block activated")
