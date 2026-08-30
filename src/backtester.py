@@ -653,8 +653,9 @@ def run_backtest(
                     if exit_mode == "scale_in":
                         # Design B (optional): leg2 takes 50% profit at leg2_tp1_r.
                         # Opt-in via config: exit_mode=='scale_in' AND
-                        # scale_in_cfg.get('leg2_tp1_r') is set.
-                        leg2_tp1_r = config.get("leg2_tp1_r")
+                        # strategy.leg2_tp1_r is set. Same fallback pattern as
+                        # other strategy.* keys: strat_cfg first, then top-level.
+                        leg2_tp1_r = strat_cfg.get("leg2_tp1_r", config.get("leg2_tp1_r"))
                         exit_obj = ScaleInExit(
                             entry=entry_info["entry"],
                             sl=entry_info["sl"],
