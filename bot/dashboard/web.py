@@ -229,8 +229,15 @@ def create_app(
     signal_csv_dir: Path | None = None,
 ) -> FastAPI:
     if db is None:
-        db = BotDB(DEFAULT_DB_PATH)
-    csv_dir = signal_csv_dir or DEFAULT_SIGNAL_CSV_DIR
+        # Honor SMC_BOT_DB_PATH env var (set by main() or by the user when
+        # running uvicorn directly). Falls back to DEFAULT_DB_PATH if unset.
+        env_db = os.environ.get("SMC_BOT_DB_PATH") or str(DEFAULT_DB_PATH)
+        if not Path(env_db).exists():
+            from bot.storage.db import init_db as _init_db
+            logger.info("initializing empty bot DB at %s", env_db)
+            _init_db(env_db)
+        db = BotDB(env_db)
+    csv_dir = Path(os.environ.get("SMC_SIGNAL_CSV_DIR", str(signal_csv_dir or DEFAULT_SIGNAL_CSV_DIR)))
     env = _jinja_env()
     static_dir = STATIC_DIR if STATIC_DIR.exists() else None
 
