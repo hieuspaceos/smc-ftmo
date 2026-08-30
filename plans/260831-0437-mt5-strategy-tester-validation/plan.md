@@ -2,10 +2,10 @@
 status: ready
 title: "MT5 Strategy Tester Validation"
 created: "2026-08-31"
-author: codex
-milestone: 2026-08-31 (alternative to Pine parity procedure)
-supersedes: plans/260831-0430-pine-parity-capture-procedure (replaced by MT5 approach)
----
+milestone: 2026-08-31 (companion to Pine parity — different layer)
+supersedes: null
+superseded_by: null
+related: plans/260831-0430-pine-parity-capture-procedure/plan.md (Pine parity — complementary signal-source validation)
 
 # MT5 Strategy Tester Validation
 
@@ -21,8 +21,8 @@ right idea in principle but:
 - The bot's real risk lives in the **MT5 execution layer**, not the
   Pine indicator.
 
-This plan replaces the Pine parity approach with MT5 Strategy Tester:
-replay Python backtest's trade list through the live EA on tick data,
+This plan complements the Pine parity approach (separate plan) by
+adding **MT5 Strategy Tester** validation:
 let MT5 simulate spread/slippage/fills, compare the resulting equity
 curve against Python's. Same goal (trust the bot before FTMO live),
 much closer to the actual risk surface, much less manual effort.
@@ -52,7 +52,8 @@ deviation in `NOTES.md` with a rationale.
   your broker provides, document the choice.
 - Optimization across TP/SL parameters — use Python's tuned config
   verbatim; tune later if needed.
-- Comparing against Pine parity — superseded by this plan.
+- Comparing against Pine parity — separate plan (260831-0430), not
+  replaced by this plan.
 
 ## Prerequisites
 
@@ -358,9 +359,9 @@ cat output/mt5_strategy_tester_validation_*/NOTES.md
 # Compare from journal + execution_log
 ```
 
-## Why this is better than the Pine parity plan
+## How this complements the Pine parity plan
 
-| Concern | Pine parity (old plan) | MT5 Strategy Tester (this plan) |
+| Concern | Pine parity (260831-0430) | MT5 Strategy Tester (260831-0437, this plan) |
 |---|---|---|
 | Manual effort | 3-4 hours Bar Replay | 0 manual (auto tester run) |
 | Coverage | 200-500 bars | Full 10 years |
@@ -370,4 +371,8 @@ cat output/mt5_strategy_tester_validation_*/NOTES.md
 | EA execution bugs caught | No | **Yes** (MT5 actually runs the EA) |
 | Setup | TradingView Premium + Bar Replay + Pine Logs parser | MT5 desktop (already owned) |
 
-The bot's real risk is in MT5 execution. This plan tests exactly that.
+The bot's real risk is in MT5 execution. **Run both plans**: Pine
+parity to verify the signal source, MT5 Strategy Tester to verify
+the execution path. Run them in either order — Pine parity first
+if you want to debug signal-level bugs first, MT5 first if you want
+to debug execution-level bugs first.

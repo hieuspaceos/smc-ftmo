@@ -1,18 +1,18 @@
-status: superseded
-title: "Pine↔Python Parity Capture Procedure (SUPERSEDED — see MT5 plan)"
+status: ready
+title: "Pine↔Python Parity Capture Procedure"
 created: "2026-08-31"
 author: codex
 milestone: 2026-08-31 (scale-in + honest parity label)
 supersedes: null
-superseded_by: plans/260831-0437-mt5-strategy-tester-validation/plan.md
+superseded_by: null
+related: plans/260831-0437-mt5-strategy-tester-validation/plan.md (MT5 Strategy Tester — complementary, not replacement)
 
-> **This plan is superseded by the MT5 Strategy Tester approach.**
-> Pine parity is the right idea in principle but: (a) needs 3-4 hours of
-> manual Bar Replay, (b) doesn't catch MQL5 EA execution bugs,
-> (c) doesn't simulate spread/slippage. The MT5 plan tests the actual
-> execution path that live will run. If you have already executed this
-> Pine plan and captured a real diff, that result is still valid as
-> a secondary signal — but the MT5 plan is the primary gate for FTMO.
+> **Note (2026-08-31):** This plan tests the **signal source** layer —
+> Pine indicator correctness. Companion plan
+> `plans/260831-0437-mt5-strategy-tester-validation/` tests the
+> **execution layer** — MT5 EA + Strategy Tester. Run both: Pine
+> parity for "does Pine emit the right signals?", MT5 tester for
+> "does MT5 execute those signals correctly?"
 
 # Pine↔Python Parity Capture Procedure
 

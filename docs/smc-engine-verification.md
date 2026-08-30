@@ -76,9 +76,11 @@ slice-by-slice handoff.
 > run `scripts/compare-pine-parity.py`. Until then the previous label
 > `parity-achieved` was misleading — this label is honest.
 >
-> See `plans/260831-0430-pine-parity-capture-procedure/` for the full
-> step-by-step procedure to upgrade this label to actual
-> `parity-achieved` (Bar-Replay capture from TradingView + diff).
+> See `plans/260831-0430-pine-parity-capture-procedure/` for the
+> Pine-parity procedure (verify signal source via Bar-Replay capture
+> + diff) and `plans/260831-0437-mt5-strategy-tester-validation/`
+> for the MT5-execution procedure (verify the live EA via Strategy
+> Tester on the same 10-year window). Both must pass before FTMO.
 
 ## Smoke Invariants
 
