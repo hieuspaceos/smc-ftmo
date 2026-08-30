@@ -163,6 +163,39 @@ def build_inline_keyboard(signal_id: str, nonce: str) -> dict[str, Any]:
         ]
     }
 
+def build_ack_keyboard(signal_id: str, missing_gates: list[str]) -> dict[str, Any]:
+    """Build a keyboard with one row per missing manual gate + Accept/Reject row.
+
+    Each ack button carries ``callback_data = "ack:<gate_name>:<signal_id>"`` so
+    the dispatcher can route the press to the right gate. The Accept/Reject row
+    is ALWAYS present (so the trader can reject even without acking gates);
+    Accept is enabled only when ``missing_gates`` is empty (the dispatcher
+    ignores Accept presses when validator says otherwise).
+    """
+    rows: list[list[dict[str, str]]] = []
+    # Two ack buttons per row (Telegram inline keyboards: max ~8 columns).
+    for i in range(0, len(missing_gates), 2):
+        chunk = missing_gates[i:i + 2]
+        rows.append(
+            [
+                {"text": f"✓ Ack {name}", "callback_data": f"ack:{name}:{signal_id}"}
+                for name in chunk
+            ]
+        )
+    rows.append(
+        [
+            {"text": "✅ Accept", "callback_data": f"accept:{signal_id}:nonce"},
+            {"text": "❌ Reject", "callback_data": f"reject:{signal_id}:nonce"},
+        ]
+    )
+    return {"inline_keyboard": rows}
+
+
+# Callback data formats (kept here so dispatcher + parser share constants).
+ACK_PREFIX = "ack:"
+ACCEPT_PREFIX = "accept:"
+REJECT_PREFIX = "reject:"
+
 
 def callback_payload_json(payload: AlertPayload) -> str:
     """Serialize minimal payload for storage in signal_events.payload."""

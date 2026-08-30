@@ -1,4 +1,4 @@
-"""Telegram dispatcher — sends signals and handles accept/reject callbacks.
+"""Telegram dispatcher — sends signals, handles accept/reject/ack callbacks.
 
 Production transport: ``python-telegram-bot`` v21+ async client. Tests inject
 ``FakeTelegramTransport`` to capture sent messages and edit attempts without
@@ -7,32 +7,27 @@ any network I/O.
 Public surface
 --------------
 - ``TelegramDispatcher(transport, allowed_users, ...)`` — main entry point.
-- ``send_signal(payload)`` → ``Optional[int]`` (Telegram message_id on success,
-  ``None`` if disabled or after retries exhausted).
-- ``edit_signal(message_id, payload, decision, actor)`` → bool.
-- ``handle_callback(callback_data, from_user_id)`` → ``Optional[CallbackDecision]``.
-- ``disabled_dispatcher`` — no-op singleton for when ``TELEGRAM_BOT_TOKEN`` is unset.
-
-Retry semantics
----------------
-``send_signal`` retries up to 3 times with exponential backoff (1s, 2s, 4s)
-on transient errors (network/timeout/HTTP 5xx). Permanent errors
-(unauthorized chat, message too long) raise immediately.
+- ``send_signal(payload)`` → ``Optional[int]``
+- ``send_with_gates(payload, gate_states, missing_gates)`` → ``Optional[int]``
+- ``edit_signal(message_id, payload, decision, actor)`` → bool
+- ``handle_callback(callback_data, from_user_id)`` → ``Optional[CallbackDecision]``
+- ``parse_ack_callback(callback_data)`` → ``Optional[(gate_name, signal_id)]``
+- ``record_decision / record_edit_failure`` audit hooks
+- ``disabled_dispatcher`` — no-op singleton when TELEGRAM_BOT_TOKEN unset.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import secrets
-import json
-from json import dumps as json_dumps
 from dataclasses import dataclass
+from json import dumps as json_dumps
 from typing import Any, Protocol
 
 from bot.notify.formatting import (
-    CallbackAction,
     build_inline_keyboard,
     format_telegram_message,
     parse_callback_data,
@@ -48,8 +43,6 @@ logger = logging.getLogger("bot.notify.telegram")
 
 
 class TelegramTransport(Protocol):
-    """Minimal async interface to python-telegram-bot's Bot API surface."""
-
     async def send_message(
         self,
         *,
@@ -57,8 +50,7 @@ class TelegramTransport(Protocol):
         text: str,
         reply_markup: dict[str, Any] | None = None,
         parse_mode: str | None = "Markdown",
-    ) -> dict[str, Any]:
-        """Returns at minimum ``{"message_id": int}``."""
+    ) -> dict[str, Any]: ...
 
     async def edit_message_text(
         self,
@@ -68,17 +60,16 @@ class TelegramTransport(Protocol):
         text: str,
         reply_markup: dict[str, Any] | None = None,
         parse_mode: str | None = "Markdown",
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
 
 class FakeTelegramTransport:
-    """In-memory transport for tests. Records every send / edit attempt."""
+    """In-memory transport for tests."""
 
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
         self.edits: list[dict[str, Any]] = []
-        self.fail_n_times: int = 0  # simulate transient failures
+        self.fail_n_times: int = 0
         self._send_seq = 0
 
     async def send_message(
@@ -127,7 +118,7 @@ class FakeTelegramTransport:
 
 
 def make_live_transport(token: str) -> TelegramTransport:
-    """Build a real python-telegram-bot transport from a bot token."""
+    """Build a real python-telegram-bot client (lazy import)."""
     from telegram import Bot  # type: ignore[import-untyped]
     from telegram.constants import ParseMode  # type: ignore[import-untyped]
 
@@ -142,7 +133,6 @@ def make_live_transport(token: str) -> TelegramTransport:
             reply_markup: dict[str, Any] | None = None,
             parse_mode: str | None = "Markdown",
         ) -> dict[str, Any]:
-            # Lazy import: telegram has heavy types
             from telegram import InlineKeyboardMarkup  # type: ignore[import-untyped]
 
             markup = (
@@ -189,29 +179,39 @@ def make_live_transport(token: str) -> TelegramTransport:
 
 @dataclass(frozen=True)
 class CallbackDecision:
-    """Outcome of a callback (accept/reject) processing attempt."""
-
     action: str  # 'accept' | 'reject'
     signal_id: str
     nonce: str
-    accepted: bool  # True iff the decision was applied (authorized + persisted)
-    reason: str  # human-readable for logging + audit
-    actor: str  # telegram user id (as string)
+    accepted: bool
+    reason: str
+    actor: str
 
 
 # ---------------------------------------------------------------------------
-# Dispatcher
+# Disabled dispatcher
 # ---------------------------------------------------------------------------
 
 
 class _DisabledDispatcher:
     """No-op dispatcher used when TELEGRAM_BOT_TOKEN is unset."""
 
-    async def send_signal(self, payload: AlertPayload) -> int | None:  # noqa: ARG002
-        logger.debug("telegram disabled; skipping send_signal for %s", payload.signal_id)
+    async def send_signal(
+        self, payload: AlertPayload, *, gate_states: dict[str, bool | None] | None = None
+    ) -> int | None:  # noqa: ARG002
         return None
 
-    async def edit_signal(self, message_id: int, payload: AlertPayload, decision: str, actor: str) -> bool:  # noqa: ARG002
+    async def send_with_gates(
+        self,
+        payload: AlertPayload,
+        *,
+        gate_states: dict[str, bool | None],
+        missing_gates: list[str],
+    ) -> int | None:  # noqa: ARG002
+        return None
+
+    async def edit_signal(
+        self, message_id: int, payload: AlertPayload, decision: str, actor: str  # noqa: ARG002
+    ) -> bool:
         return False
 
     async def handle_callback(
@@ -219,6 +219,22 @@ class _DisabledDispatcher:
         callback_data: str,
         from_user_id: int,
     ) -> CallbackDecision | None:
+        return None
+
+    @staticmethod
+    def parse_ack_callback(callback_data: str) -> tuple[str, str] | None:
+        return None
+
+    @staticmethod
+    def record_decision(
+        db: Any, signal_id: str, *, decision: str, actor: str, nonce: str
+    ) -> None:
+        return None
+
+    @staticmethod
+    def record_edit_failure(
+        db: Any, signal_id: str, *, actor: str, exc: Exception
+    ) -> None:
         return None
 
     @property
@@ -236,16 +252,12 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    val = os.environ.get(name)
-    if val is None or val == "":
-        return default
-    return val.lower() in ("1", "true", "yes", "y", "on")
+# ---------------------------------------------------------------------------
+# Dispatcher
+# ---------------------------------------------------------------------------
 
 
 class TelegramDispatcher:
-    """Send and edit Telegram messages for alerts."""
-
     def __init__(
         self,
         transport: TelegramTransport,
@@ -260,8 +272,6 @@ class TelegramDispatcher:
         self._allowed_user_ids = frozenset(allowed_user_ids)
         self._max_retries = max_retries
         self._backoff_base = backoff_base_seconds
-        # Open messages cache (signal_id -> message_id). Used so callback handler
-        # can look up which message to edit.
         self._message_ids: dict[str, int] = {}
 
     @property
@@ -282,11 +292,35 @@ class TelegramDispatcher:
         *,
         gate_states: dict[str, bool | None] | None = None,
     ) -> int | None:
-        """Send the alert and return the resulting message_id, or ``None``
-        after retries exhausted."""
         nonce = secrets.token_hex(8)
         text = format_telegram_message(payload, gate_states=gate_states)
         keyboard = build_inline_keyboard(payload.signal_id, nonce)
+        return await self._do_send(payload, text, keyboard)
+
+    async def send_with_gates(
+        self,
+        payload: AlertPayload,
+        *,
+        gate_states: dict[str, bool | None],
+        missing_gates: list[str],
+    ) -> int | None:
+        """Send alert + keyboard that includes per-gate ack rows when needed."""
+        nonce = secrets.token_hex(8)
+        text = format_telegram_message(payload, gate_states=gate_states)
+        if missing_gates:
+            from bot.notify.formatting import build_ack_keyboard
+
+            keyboard = build_ack_keyboard(payload.signal_id, missing_gates)
+        else:
+            keyboard = build_inline_keyboard(payload.signal_id, nonce)
+        return await self._do_send(payload, text, keyboard)
+
+    async def _do_send(
+        self,
+        payload: AlertPayload,
+        text: str,
+        keyboard: dict[str, Any],
+    ) -> int | None:
         last_exc: Exception | None = None
         for attempt in range(self._max_retries):
             try:
@@ -303,7 +337,7 @@ class TelegramDispatcher:
                     payload.signal_id, msg_id, attempt + 1,
                 )
                 return msg_id
-            except Exception as exc:  # noqa: BLE001 — retry on any transient failure
+            except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 backoff = self._backoff_base * (2 ** attempt)
                 logger.warning(
@@ -319,7 +353,7 @@ class TelegramDispatcher:
         return None
 
     # ------------------------------------------------------------------
-    # Edit (after Accept/Reject)
+    # Edit
     # ------------------------------------------------------------------
 
     async def edit_signal(
@@ -330,7 +364,6 @@ class TelegramDispatcher:
         decision: str,
         actor: str,
     ) -> bool:
-        """Replace the message body with the decision outcome and disable buttons."""
         if decision not in ("accept", "reject"):
             raise ValueError(f"decision must be 'accept' or 'reject', got {decision!r}")
         new_text = (
@@ -342,7 +375,7 @@ class TelegramDispatcher:
                 chat_id=self._chat_id,
                 message_id=message_id,
                 text=new_text,
-                reply_markup=None,  # remove keyboard
+                reply_markup=None,
                 parse_mode="Markdown",
             )
             self._message_ids.pop(payload.signal_id, None)
@@ -355,7 +388,7 @@ class TelegramDispatcher:
             return False
 
     # ------------------------------------------------------------------
-    # Callback
+    # Callback parsing + authorization
     # ------------------------------------------------------------------
 
     async def handle_callback(
@@ -363,18 +396,12 @@ class TelegramDispatcher:
         callback_data: str,
         from_user_id: int,
     ) -> CallbackDecision | None:
-        """Authorize + parse + return decision. Does NOT persist; caller (Phase 03)
-        is responsible for recording ``signal_events`` and re-checking gates."""
         parsed = parse_callback_data(callback_data)
         if parsed is None:
             logger.info("rejecting malformed callback: %r", callback_data)
             return CallbackDecision(
-                action="reject",
-                signal_id="",
-                nonce="",
-                accepted=False,
-                reason="malformed callback_data",
-                actor=str(from_user_id),
+                action="reject", signal_id="", nonce="", accepted=False,
+                reason="malformed callback_data", actor=str(from_user_id),
             )
         actor = str(from_user_id)
         if from_user_id not in self._allowed_user_ids:
@@ -382,21 +409,38 @@ class TelegramDispatcher:
                 "rejecting callback from user=%s not in allowlist", from_user_id,
             )
             return CallbackDecision(
-                action=parsed.action,
-                signal_id=parsed.signal_id,
-                nonce=parsed.nonce,
-                accepted=False,
-                reason="user not allowed",
+                action=parsed.action, signal_id=parsed.signal_id,
+                nonce=parsed.nonce, accepted=False, reason="user not allowed",
                 actor=actor,
             )
         return CallbackDecision(
-            action=parsed.action,
-            signal_id=parsed.signal_id,
-            nonce=parsed.nonce,
-            accepted=True,
-            reason="authorized",
-            actor=actor,
+            action=parsed.action, signal_id=parsed.signal_id,
+            nonce=parsed.nonce, accepted=True, reason="authorized", actor=actor,
         )
+
+    @staticmethod
+    def parse_ack_callback(callback_data: str) -> tuple[str, str] | None:
+        """Parse ``ack:<gate_name>:<signal_id>``. Returns (gate_name, signal_id) or None."""
+        from bot.notify.formatting import ACK_PREFIX
+        from bot.gates.state import MANUAL_GATE_NAMES
+
+        if not callback_data or not callback_data.startswith(ACK_PREFIX):
+            return None
+        body = callback_data[len(ACK_PREFIX):]
+        parts = body.split(":", 1)
+        if len(parts) != 2:
+            return None
+        gate_name, signal_id = parts
+        if gate_name not in MANUAL_GATE_NAMES:
+            return None
+        if any(c not in "0123456789abcdef" for c in signal_id.lower()):
+            return None
+        return gate_name, signal_id.lower()
+
+    # ------------------------------------------------------------------
+    # Audit hooks (Phase 03 wires these into Accept revalidation)
+    # ------------------------------------------------------------------
+
     @staticmethod
     def record_decision(
         db: Any,
@@ -406,12 +450,6 @@ class TelegramDispatcher:
         actor: str,
         nonce: str,
     ) -> None:
-        """Persist a callback decision to ``signal_events``.
-
-        Phase 03 will call this after re-checking gates; exposed here so
-        dispatcher + audit logic are colocated and Phase 03 only adds the
-        route handler.
-        """
         if decision not in ("accept", "reject"):
             raise ValueError(f"decision must be 'accept' or 'reject', got {decision!r}")
         db.record_event(
@@ -427,14 +465,14 @@ class TelegramDispatcher:
     @staticmethod
     def record_edit_failure(db: Any, signal_id: str, *, actor: str, exc: Exception) -> None:
         db.record_event(
-            signal_id,
-            "edit_failed",
-            payload=str(exc),
-            actor=actor,
+            signal_id, "edit_failed",
+            payload=str(exc), actor=actor,
         )
 
     def get_message_id(self, signal_id: str) -> int | None:
         return self._message_ids.get(signal_id)
+
+
 # ---------------------------------------------------------------------------
 # Factory from env
 # ---------------------------------------------------------------------------
@@ -444,10 +482,6 @@ def dispatcher_from_env(
     *,
     transport: TelegramTransport | None = None,
 ) -> Any:
-    """Build a dispatcher from environment variables.
-
-    Returns ``disabled_dispatcher`` (no-op) if ``TELEGRAM_BOT_TOKEN`` is unset.
-    """
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "") or ""
     if not token:
         logger.info("TELEGRAM_BOT_TOKEN unset; telegram dispatcher disabled")
@@ -456,7 +490,7 @@ def dispatcher_from_env(
     try:
         chat_id: int | str = int(chat_id_env)
     except ValueError:
-        chat_id = chat_id_env  # may be a @channel_name
+        chat_id = chat_id_env
     allowed_str = os.environ.get("TELEGRAM_ALLOWED_USERS", "") or ""
     allowed_user_ids: set[int] = set()
     for chunk in allowed_str.split(","):
