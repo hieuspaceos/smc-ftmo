@@ -1,27 +1,23 @@
-"""FastAPI webhook server + background notification dispatch.
+"""FastAPI webhook server + 11-gate validation + background notification dispatch.
 
 Endpoints
 ---------
 - ``POST /webhooks/tradingview`` — accept Pine ``SMC|v1|...`` payload
+- ``POST /telegram/callback`` — accept Telegram inline button presses (ack / accept / reject)
+- ``POST /telegram/command`` — accept Telegram ``/ack <gate>`` text commands
 - ``GET  /healthz`` — liveness probe
 
-Pipeline (per Phase 01 + 02 plans)
------------------------------------
+Pipeline (per Phase 01 + 02 + 03 plans)
+----------------------------------------
 1. Verify source (TradingView IP allowlist + URL secret).
 2. Enforce 4 KB body cap.
 3. Parse ``SMC|v1|...`` into ``AlertPayload``.
 4. INSERT into ``alert_log`` (idempotent on ``signal_id + prefix``).
-5. Record ``signal_events`` row ``received`` (best-effort).
-6. Background task: dispatch to Telegram + Discord mirror.
-7. Record ``signal_events`` row ``notified`` / ``notified_failed``.
-
-Returns
--------
-``202 Accepted`` (new valid), ``200 OK`` (duplicate),
-``400 Bad Request`` (malformed), ``401 Unauthorized`` (auth fail),
-``413 Content Too Large`` (body > 4 KB), ``429 Too Many Requests``.
-"""
-
+5. Record ``signal_events`` row ``received``.
+6. Background: validate 11 gates; if BLOCKED/EXPIRED skip Telegram; else
+   send_with_gates (with ack rows when manual gates missing).
+7. Record audit rows for every Telegram/Discord outcome.
+----"""
 from __future__ import annotations
 
 import logging
@@ -31,15 +27,27 @@ import time
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 
+from bot.gates.state import GateStateStore
+from bot.gates.validator import Decision, Validator
 from bot.notify.discord import DiscordMirror, mirror_from_env
-from bot.notify.formatting import callback_payload_json
-from bot.notify.telegram import TelegramDispatcher, dispatcher_from_env
+from bot.notify.formatting import (
+    ACCEPT_PREFIX,
+    ACK_PREFIX,
+    REJECT_PREFIX,
+    callback_payload_json,
+)
+from bot.notify.telegram import (
+    CallbackDecision,
+    TelegramDispatcher,
+    dispatcher_from_env,
+)
 from bot.storage.db import BotDB, get_default_db_path, init_db
 from bot.webhook.payload import AlertPayload, PayloadParseError, parse_payload
 from bot.webhook.security import (
@@ -63,6 +71,13 @@ MIN_SECRET_LENGTH = 16
 def _env(name: str, default: str | None = None) -> str | None:
     val = os.environ.get(name)
     return val if val not in (None, "") else default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    val = os.environ.get(name)
+    if val is None or val == "":
+        return default
+    return val.lower() in ("1", "true", "yes", "y", "on")
 
 
 @dataclass(frozen=True)
@@ -132,16 +147,56 @@ class _ThrottledLogger:
 
 
 # ---------------------------------------------------------------------------
-# Background dispatch
+# Background dispatch helpers (Phase 03)
 # ---------------------------------------------------------------------------
 
 
 async def _safe_record(db: BotDB, signal_id: str, event_type: str, **kwargs: Any) -> None:
-    """Record a signal_events row; swallow DB failures so background dispatch never crashes."""
     try:
         db.record_event(signal_id, event_type, **kwargs)
     except Exception:  # noqa: BLE001
         logger.exception("record_event failed: signal_id=%s type=%s", signal_id, event_type)
+
+
+async def _safe_dispatch_telegram(
+    dispatcher: Any,
+    db: BotDB,
+    payload: AlertPayload,
+    payload_json: str,
+    signal_id: str,
+    *,
+    gate_states: dict[str, bool | None] | None = None,
+    missing_gates: list[str] | None = None,
+) -> None:
+    if not getattr(dispatcher, "enabled", False):
+        await _safe_record(db, signal_id, "notified_skipped", payload=payload_json, actor="telegram")
+        return
+    try:
+        if missing_gates is not None:
+            msg_id = await dispatcher.send_with_gates(
+                payload, gate_states=gate_states or {}, missing_gates=missing_gates,
+            )
+        else:
+            msg_id = await dispatcher.send_signal(payload, gate_states=gate_states)
+        if msg_id is not None:
+            await _safe_record(db, signal_id, "notified", payload=payload_json, actor="telegram")
+        else:
+            await _safe_record(db, signal_id, "notified_failed", payload=payload_json, actor="telegram")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("telegram send crashed: signal_id=%s exc=%s", signal_id, exc)
+        await _safe_record(db, signal_id, "notified_failed", actor="telegram", payload=str(exc))
+
+
+async def _safe_dispatch_mirror(
+    mirror: Any, db: BotDB, payload: AlertPayload, payload_json: str, signal_id: str,
+) -> None:
+    try:
+        ok = await mirror.send_signal(payload)
+        if not ok:
+            await _safe_record(db, signal_id, "mirror_failed", payload=payload_json, actor="discord")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("discord mirror crashed: signal_id=%s exc=%s", signal_id, exc)
+        await _safe_record(db, signal_id, "mirror_failed", actor="discord", payload=str(exc))
 
 
 async def _dispatch_signal(
@@ -149,44 +204,269 @@ async def _dispatch_signal(
     dispatcher: Any,
     mirror: Any,
     db: BotDB,
+    validator: Validator | None = None,
+    gate_store: GateStateStore | None = None,
 ) -> None:
-    """Send to Telegram + Discord mirror; record signal_events audit rows.
-
-    Designed to run inside ``BackgroundTasks`` — exceptions are caught and
-    logged so background failures never crash the server. Telegram and
-    Discord are independent: a Telegram failure does NOT block Discord.
-    """
+    """Background dispatch. Validator short-circuits Telegram when blocked/expired."""
     signal_id = payload.signal_id
     payload_json = callback_payload_json(payload)
 
-    # Telegram — independent of Discord.
-    if getattr(dispatcher, "enabled", False):
+    if validator is not None and gate_store is not None:
         try:
-            msg_id = await dispatcher.send_signal(payload)
-            if msg_id is not None:
-                await _safe_record(db, signal_id, "notified", payload=payload_json, actor="telegram")
-            else:
-                await _safe_record(db, signal_id, "notified_failed", payload=payload_json, actor="telegram")
+            outcome = validator.validate(payload)
+            if outcome.decision is Decision.BLOCKED:
+                reasons = "; ".join(outcome.blocking_reasons())
+                await _safe_record(
+                    db, signal_id, "blocked_chart",
+                    actor="validator", payload=reasons,
+                )
+                logger.info("alert blocked by chart gates: signal_id=%s reasons=%s", signal_id, reasons)
+                if getattr(mirror, "enabled", False):
+                    await _safe_dispatch_mirror(mirror, db, payload, payload_json, signal_id)
+                return
+            if outcome.decision is Decision.EXPIRED:
+                await _safe_record(
+                    db, signal_id, "expired",
+                    actor="validator", payload="signal-specific gates expired",
+                )
+                if getattr(mirror, "enabled", False):
+                    await _safe_dispatch_mirror(mirror, db, payload, payload_json, signal_id)
+                return
+            snapshot = gate_store.snapshot()
+            gate_states: dict[str, bool | None] = {}
+            for name, status_obj in snapshot.statuses.items():
+                gate_states[name] = status_obj.value if not status_obj.expired else None
+            missing_gates = list(outcome.missing_manual)
+            await _safe_dispatch_telegram(
+                dispatcher, db, payload, payload_json, signal_id,
+                gate_states=gate_states, missing_gates=missing_gates,
+            )
+            if getattr(mirror, "enabled", False):
+                await _safe_dispatch_mirror(mirror, db, payload, payload_json, signal_id)
+            return
         except Exception as exc:  # noqa: BLE001
-            logger.warning("telegram send crashed: signal_id=%s exc=%s", signal_id, exc)
-            await _safe_record(db, signal_id, "notified_failed", actor="telegram", payload=str(exc))
-    else:
-        await _safe_record(db, signal_id, "notified_skipped", payload=payload_json, actor="telegram")
+            logger.warning(
+                "validator crashed: signal_id=%s exc=%s; falling back to plain send",
+                signal_id, exc,
+            )
 
-    # Discord mirror — independent of Telegram.
+    # Fallback: no validator or validator crashed → Phase 02 behavior.
+    await _safe_dispatch_telegram(dispatcher, db, payload, payload_json, signal_id)
     if getattr(mirror, "enabled", False):
-        try:
-            ok = await mirror.send_signal(payload)
-            if not ok:
-                await _safe_record(db, signal_id, "mirror_failed", payload=payload_json, actor="discord")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("discord mirror crashed: signal_id=%s exc=%s", signal_id, exc)
-            await _safe_record(db, signal_id, "mirror_failed", actor="discord", payload=str(exc))
+        await _safe_dispatch_mirror(mirror, db, payload, payload_json, signal_id)
 
 
 # ---------------------------------------------------------------------------
-# App factory
+# Telegram callback / command handlers (Phase 03)
 # ---------------------------------------------------------------------------
+
+
+async def _handle_telegram_callback(
+    request: Request,
+    db: BotDB,
+    dispatcher: Any,
+    validator: Validator,
+    gate_store: GateStateStore,
+) -> JSONResponse:
+    """Process a Telegram inline button press.
+
+    Body shape (JSON):
+      ``{"callback_data": "accept:<sid>:<nonce>", "from_user_id": 123}``
+    """
+    body = await request.body()
+    try:
+        import json as _json
+        obj = _json.loads(body)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"bad json: {exc}")
+    callback_data = obj.get("callback_data", "")
+    from_user_id = int(obj.get("from_user_id", 0))
+    decision: CallbackDecision | None = await dispatcher.handle_callback(callback_data, from_user_id)
+    if decision is None:
+        return JSONResponse({"decision": "ignored"}, status_code=status.HTTP_200_OK)
+    if not decision.accepted:
+        return JSONResponse(
+            {"decision": "rejected", "reason": decision.reason},
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    # Phase 03: handle ack vs accept/reject.
+    if callback_data.startswith(ACK_PREFIX):
+        parsed = dispatcher.parse_ack_callback(callback_data)
+        if parsed is None:
+            return JSONResponse(
+                {"decision": "rejected", "reason": "malformed ack"},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        gate_name, signal_id = parsed
+        gate_store.upsert(gate_name, value=True, acknowledged_by=str(from_user_id))
+        return JSONResponse(
+            {"decision": "acked", "gate": gate_name, "signal_id": signal_id}
+        )
+
+    if callback_data.startswith(ACCEPT_PREFIX):
+        return await _accept_signal(db, dispatcher, validator, gate_store, callback_data, decision)
+
+    if callback_data.startswith(REJECT_PREFIX):
+        return await _reject_signal(db, dispatcher, gate_store, callback_data, decision)
+    return JSONResponse({"decision": "rejected", "reason": "unknown action"}, status_code=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+async def _accept_signal(
+    db: BotDB,
+    dispatcher: Any,
+    validator: Validator,
+    gate_store: GateStateStore,
+    callback_data: str,
+    decision: CallbackDecision,
+) -> JSONResponse:
+    """Re-validate gates on Accept; mark accepted or refused."""
+    from bot.notify.formatting import parse_callback_data as _pcd
+
+    parsed = _pcd(callback_data)
+    if parsed is None:
+        return JSONResponse({"decision": "rejected", "reason": "malformed"}, status_code=status.HTTP_400_BAD_REQUEST)
+    signal_id = parsed.signal_id
+    alert = db.get_alert_by_signal_id(signal_id)
+    if alert is None:
+        return JSONResponse({"decision": "rejected", "reason": "unknown signal"}, status_code=status.HTTP_404_NOT_FOUND)
+
+    # Build AlertPayload from stored row so validator re-checks chart gates.
+    # model_construct skips Pydantic validators (we re-read what parser already
+    # validated).
+    payload = AlertPayload.model_construct(
+        prefix=alert["prefix"],
+        version=alert["version"],
+        event=alert["event"],
+        symbol=alert["symbol"],
+        tf=alert["tf"],
+        dir=alert["side"],
+        level=float(alert["level"]),
+        bar_time=int(alert["bar_time"]),
+        ob_id=int(alert["ob_id"]),
+        bos_id=int(alert["bos_id"]),
+        state=alert["state"],
+        reason=alert["reason"],
+        received_at=datetime.now(timezone.utc),
+        raw_payload=alert["raw_payload"],
+        signal_id=alert["signal_id"],
+    )
+    outcome = validator.validate(payload)
+    if outcome.decision is not Decision.ACCEPTED_READY:
+        # Refuse + edit message to show why.
+        reasons = "; ".join(outcome.blocking_reasons())
+        msg_id = dispatcher.get_message_id(signal_id)
+        if msg_id is not None:
+            await dispatcher.edit_signal(msg_id, payload, decision="reject", actor=decision.actor)
+            dispatcher.record_edit_failure if False else None  # type: ignore[unreachable]
+        dispatcher.record_decision(
+            db, signal_id,
+            decision="reject", actor=decision.actor, nonce=parsed.nonce,
+        )
+        return JSONResponse(
+            {"decision": "refused", "reason": reasons, "validator_decision": outcome.decision.value},
+            status_code=status.HTTP_409_CONFLICT,
+        )
+
+    # Pass: mark accepted, edit Telegram message, clear signal-specific gates.
+    dispatcher.record_decision(
+        db, signal_id,
+        decision="accept", actor=decision.actor, nonce=parsed.nonce,
+    )
+    msg_id = dispatcher.get_message_id(signal_id)
+    if msg_id is not None:
+        await dispatcher.edit_signal(msg_id, payload, decision="accept", actor=decision.actor)
+    gate_store.clear_signal_specific()
+    return JSONResponse(
+        {"decision": "accepted", "signal_id": signal_id, "actor": decision.actor},
+    )
+
+
+async def _reject_signal(
+    db: BotDB,
+    dispatcher: Any,
+    gate_store: GateStateStore,
+    callback_data: str,
+    decision: CallbackDecision,
+) -> JSONResponse:
+    from bot.notify.formatting import parse_callback_data as _pcd
+
+    parsed = _pcd(callback_data)
+    if parsed is None:
+        return JSONResponse({"decision": "rejected", "reason": "malformed"}, status_code=status.HTTP_400_BAD_REQUEST)
+    signal_id = parsed.signal_id
+    dispatcher.record_decision(
+        db, signal_id,
+        decision="reject", actor=decision.actor, nonce=parsed.nonce,
+    )
+    # Reject also clears signal-specific gates — same semantics as Accept
+    # (the trader is no longer pursuing this signal).
+    gate_store.clear_signal_specific()
+    msg_id = dispatcher.get_message_id(signal_id)
+    if msg_id is not None:
+        alert = db.get_alert_by_signal_id(signal_id)
+        if alert is not None:
+            payload = AlertPayload.model_construct(
+                prefix=alert["prefix"], version=alert["version"],
+                event=alert["event"], symbol=alert["symbol"], tf=alert["tf"],
+                dir=alert["side"], level=float(alert["level"]),
+                bar_time=int(alert["bar_time"]),
+                ob_id=int(alert["ob_id"]), bos_id=int(alert["bos_id"]),
+                state=alert["state"], reason=alert["reason"],
+                received_at=datetime.now(timezone.utc),
+                raw_payload=alert["raw_payload"],
+                signal_id=alert["signal_id"],
+            )
+            await dispatcher.edit_signal(msg_id, payload, decision="reject", actor=decision.actor)
+    return JSONResponse({"decision": "rejected", "signal_id": signal_id, "actor": decision.actor})
+
+
+async def _handle_telegram_command(
+    request: Request,
+    db: BotDB,
+    dispatcher: Any,
+    gate_store: GateStateStore,
+) -> JSONResponse:
+    """Process Telegram ``/ack <gate_name>`` text commands.
+
+    Body shape (JSON): ``{"text": "/ack risk_ok", "from_user_id": 123}``
+
+    Authorization: ``from_user_id`` MUST be in dispatcher's allowlist. Without
+    this check, anyone with the webhook URL secret could spoof /ack commands
+    and bypass manual gate requirements.
+    """
+    body = await request.body()
+    try:
+        import json as _json
+        obj = _json.loads(body)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"bad json: {exc}")
+    text = (obj.get("text") or "").strip()
+    from_user_id_raw = obj.get("from_user_id", 0)
+    try:
+        from_user_id = int(from_user_id_raw)
+    except (TypeError, ValueError):
+        return JSONResponse({"handled": False, "reason": "invalid from_user_id"}, status_code=status.HTTP_400_BAD_REQUEST)
+    allowed_ids = getattr(dispatcher, "allowed_user_ids", frozenset())
+    if from_user_id not in allowed_ids:
+        logger.warning("rejecting /ack from unauthorized user_id=%s", from_user_id)
+        return JSONResponse(
+            {"handled": False, "reason": "user not allowed"},
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    if not text.startswith("/ack"):
+        return JSONResponse({"handled": False, "reason": "not a /ack command"}, status_code=status.HTTP_200_OK)
+    parts = text.split()
+    if len(parts) != 2:
+        return JSONResponse({"handled": False, "reason": "usage: /ack <gate_name>"}, status_code=status.HTTP_200_OK)
+    gate_name = parts[1]
+    try:
+        gate_store.upsert(gate_name, value=True, acknowledged_by=str(from_user_id))
+    except ValueError as exc:
+        return JSONResponse({"handled": False, "reason": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
+    return JSONResponse({"handled": True, "gate": gate_name, "by": str(from_user_id)})
 
 
 def create_app(
@@ -195,6 +475,8 @@ def create_app(
     db: BotDB | None = None,
     dispatcher: Any | None = None,
     mirror: Any | None = None,
+    validator: Validator | None = None,
+    gate_store: GateStateStore | None = None,
 ) -> FastAPI:
     settings = settings or AppSettings.from_env()
     limiter = _RateLimiter(settings.security.rate_limit_per_min)
@@ -208,6 +490,13 @@ def create_app(
         dispatcher = dispatcher_from_env()
     if mirror is None:
         mirror = mirror_from_env()
+    if gate_store is None:
+        gate_store = GateStateStore(active_db)
+    if validator is None:
+        validator = Validator(
+            gate_store,
+            admin_override=_env_bool("GATE_ADMIN_OVERRIDE", False),
+        )
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -215,6 +504,8 @@ def create_app(
         app.state.limiter = limiter
         app.state.dispatcher = dispatcher
         app.state.mirror = mirror
+        app.state.validator = validator
+        app.state.gate_store = gate_store
         logger.info(
             "bot webhook ready: db=%s telegram=%s discord=%s",
             settings.db_path,
@@ -224,7 +515,6 @@ def create_app(
         try:
             yield
         finally:
-            # Close Discord httpx client to avoid connection leak on shutdown.
             close = getattr(mirror, "aclose", None)
             if callable(close):
                 try:
@@ -236,7 +526,7 @@ def create_app(
 
     app = FastAPI(
         title="SMC Bot Webhook",
-        version="0.2.0",
+        version="0.3.0",
         lifespan=_lifespan,
         docs_url=None,
         redoc_url=None,
@@ -248,6 +538,8 @@ def create_app(
     app.state.db = active_db
     app.state.dispatcher = dispatcher
     app.state.mirror = mirror
+    app.state.validator = validator
+    app.state.gate_store = gate_store
 
     async def _verify_source(request: Request) -> None:
         client_ip = extract_client_ip(
@@ -285,9 +577,10 @@ def create_app(
         return {
             "status": "ok",
             "service": "smc-bot-webhook",
-            "version": "0.2.0",
+            "version": "0.3.0",
             "telegram": bool(getattr(dispatcher, "enabled", False)),
             "discord": bool(getattr(mirror, "enabled", False)),
+            "admin_override": validator._admin_override,  # type: ignore[attr-defined]
         }
 
     @app.post("/webhooks/tradingview")
@@ -312,13 +605,10 @@ def create_app(
 
         client_ip = getattr(request.state, "client_ip", None)
         alert_id, is_new = active_db.insert_alert(
-            payload,
-            client_ip=client_ip,
-            url_token_ok=True,
+            payload, client_ip=client_ip, url_token_ok=True,
         )
 
         if is_new:
-            # 'received' audit (best-effort, never break ingestion).
             try:
                 active_db.record_event(
                     payload.signal_id, "received",
@@ -328,15 +618,14 @@ def create_app(
             except Exception:  # noqa: BLE001
                 logger.exception("failed to record received event for %s", payload.signal_id)
 
-            # Background dispatch. BackgroundTasks runs AFTER response is sent
-            # in production Starlette (and in TestClient too). Dispatch itself
-            # NEVER blocks the response.
             background.add_task(
                 _dispatch_signal,
                 payload,
                 dispatcher,
                 mirror,
                 active_db,
+                validator,
+                gate_store,
             )
 
         body_json = {
@@ -353,6 +642,20 @@ def create_app(
             return JSONResponse(body_json, status_code=status.HTTP_202_ACCEPTED)
         logger.info("alert duplicate (signal_id=%s) bumped dedupe_count", payload.signal_id)
         return JSONResponse(body_json, status_code=status.HTTP_200_OK)
+
+    @app.post("/telegram/callback")
+    async def telegram_callback(
+        request: Request,
+        _: None = Depends(_verify_source),
+    ) -> JSONResponse:
+        return await _handle_telegram_callback(request, active_db, dispatcher, validator, gate_store)
+
+    @app.post("/telegram/command")
+    async def telegram_command(
+        request: Request,
+        _: None = Depends(_verify_source),
+    ) -> JSONResponse:
+        return await _handle_telegram_command(request, active_db, dispatcher, gate_store)
 
     @app.exception_handler(HTTPException)
     async def _http_exc_handler(_: Request, exc: HTTPException) -> JSONResponse:
