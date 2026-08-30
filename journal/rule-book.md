@@ -61,18 +61,15 @@ giữ ladder 40/30/30 — không áp scale-in lên chart.
 4. Cascade về entry: leg1 rem = 0 (BE) + leg2 = -1R → 0R tổng
 5. SL trước 2R: -1R (leg2 chưa mở)
 
-**Risk profile scale-in (backtest EURUSD 2016-2026, 1326 lệnh):**
+**Risk profile scale-in (backtest EURUSD 2016-2026, 603 lệnh):**
 
 | Metric | Ladder | Scale-in |
 |---|---|---|
-| Avg R | +0.684R | **+0.824R** |
-| Profit factor | 1.88 | **2.74** |
-| Max DD | 5.69% | **3.21%** |
-| Winrate | 52.1% | 32.4% |
-| Total PnL | $488,908 | **$601,150** |
-
-Scale-in tăng +23% PnL, giảm -44% DD so với ladder, nhưng giảm winrate vì
-trade hit 4R (đếm win) ít hơn trade cascade BE (không tính win/loss). Triết
+| Avg R | +0.684R | **+1.075R** |
+| Profit factor | 1.88 | **3.57** |
+| Max DD | 5.69% | **3.40%** |
+| Winrate | 52.1% | 37.3% |
+| Total PnL | $488,908 | **$456,400** |
 lý scale-in: **R/R và payoff quan trọng hơn winrate**.
 
 **Overshoot-safe:** PnL luôn cap tại đúng exit price, không tính theo bar

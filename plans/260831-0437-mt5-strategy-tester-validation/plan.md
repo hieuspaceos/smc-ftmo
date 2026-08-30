@@ -47,7 +47,7 @@ For Phase 1+, confirm:
 - Trade count within ±5% of Python (603 ± 30 trades)
 - Final PnL within ±15% of Python ($456,400 ± $68K)
 - Max DD within +1pp of Python (3.40% ≤ 4.40%)
-- Profit factor within ±10% of Python (3.57 ≥ 3.21)
+- Profit factor within ±10% of Python (≥ 3.21 = 3.57 × 0.90)
 - No order rejection or execution errors in MT5 logs
 
 If all hold, the bot's MT5 execution layer is trusted. Move on to
@@ -167,9 +167,7 @@ Goal: produce a CSV the MQL5 EA can replay.
    print(f'Wrote {len(trades)} trades to output/mt5_replay_trades.csv')
    "
    ```
-
-2. Verify the CSV has:
-   - 1 header row + 1326 data rows
+   - 1 header row + 603 data rows
    - All `entry` prices in EURUSD range (1.05-1.25 for 2016-2026)
    - No null cells
 
@@ -276,7 +274,7 @@ accepted.
 
 1. Run Python baseline (same config as Phase 1) and capture:
    ```
-   Trades: 1326, PF: 2.74, Max DD: 3.21%, Total PnL: $601,150
+   Trades: 603, PF: 3.57, Max DD: 3.40%, Total PnL: $456,400
    ```
 
 2. Read MT5 results from Phase 3 artifacts.
@@ -285,10 +283,10 @@ accepted.
 
    | Metric | Python baseline | MT5 tolerance | Action if out of tolerance |
    |---|---|---|---|
-   | Trade count | 1326 | ±5% (1265-1387) | Fix: EA skipped entries / double-fired |
-   | Total net profit | $601,150 | ±15% ($511-691K) | Fix: lot size / slippage / spread config |
-   | Max DD | 3.21% | +1.0pp (≤4.21%) | Fix: position sizing / margin mode |
-   | Profit factor | 2.74 | ±10% (≥2.47) | Fix: SL/TP fill timing |
+   | Trade count | 603 | ±5% (573-633) | Fix: EA skipped entries / double-fired |
+   | Total net profit | $456,400 | ±15% ($388-525K) | Fix: lot size / slippage / spread config |
+   | Max DD | 3.40% | +1.0pp (≤4.40%) | Fix: position sizing / margin mode |
+   | Profit factor | 3.57 | ±10% (≥3.21) | Fix: SL/TP fill timing |
    | Order rejections | 0 | =0 (any is bad) | Fix: lot cap, margin, broker symbol name |
 
 4. Write results + decisions to
@@ -309,10 +307,10 @@ accepted.
    ## Results
    | Metric | Python | MT5 | Delta | In tolerance? |
    |---|---|---|---|---|
-   | Trades | 1326 | ... | ... | yes/no |
-   | PnL | $601,150 | ... | ... | yes/no |
-   | Max DD | 3.21% | ... | ... | yes/no |
-   | PF | 2.74 | ... | ... | yes/no |
+   | Trades | 603 | ... | ... | yes/no |
+   | PnL | $456,400 | ... | ... | yes/no |
+   | Max DD | 3.40% | ... | ... | yes/no |
+   | PF | 3.57 | ... | ... | yes/no |
    | Rejections | 0 | ... | ... | yes/no |
 
    ## Mismatches investigated
@@ -365,7 +363,7 @@ If all metrics in tolerance: ship to FTMO demo account.
 
 ## Acceptance criteria
 
-- [ ] Phase 1 produces `output/mt5_replay_trades.csv` with 1326 trades
+- [ ] Phase 1 produces `output/mt5_replay_trades.csv` with 603 trades
 - [ ] Phase 2 compiles `mql5_replay.mq5` without errors
 - [ ] Phase 3 completes the 10-year Strategy Tester run
 - [ ] Phase 4 `NOTES.md` documents every metric with verdict

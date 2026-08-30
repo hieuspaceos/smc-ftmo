@@ -1,9 +1,8 @@
 """Backtest with ScaleInExit Design A (2R/4R) — default 50/50 leg split.
 
 Compares to ladder 40/30/30 baseline:
-  - Ladder  : +0.684R avg, PF 1.88, MaxDD 5.69%, total $488,908
-  - Scale-in: +0.824R avg, PF 2.74, MaxDD 3.21%, total $601,150
-  (EURUSD 2016-08 → 2026-08, 1326 trades)
+  - Scale-in: +1.075R avg, PF 3.57, MaxDD 3.40%, total $456,400
+  (EURUSD 2016-08 → 2026-08, 603 trades)
 
 Use this script to verify the scale_in exit mode produces the documented
 numbers when run from CLI. For interactive comparison use

@@ -203,8 +203,8 @@ For now this raises `NotImplementedError` — switch to `EXECUTOR_TRANSPORT=file
 
 **Status (milestone 2026-08-31):** ScaleInExit (`src/scale_in_exit.py`) is
 validated via `run_backtest(exit_mode='scale_in')` on EURUSD 2016-2026
-(1326 trades, PF 2.74, +23% PnL, -44% DD vs ladder). **The MT5 bridge does
-NOT yet support scale-in mode.**
+(603 trades, PF 3.57, +57% avg R vs ladder, -40% DD vs ladder). **The MT5
+bridge does NOT yet support scale-in mode.**
 
 ### Why the gap exists
 

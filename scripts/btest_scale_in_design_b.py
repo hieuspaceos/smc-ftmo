@@ -6,12 +6,12 @@ Design B extends Design A with an intermediate profit-take on leg2:
   - Hit 4R  → close leg1 rem + leg2 rem (capped at TP, no overshoot)
   - Cascade → leg2 closes at locked SL if TP1 was hit, else at entry
 
-Design A vs B tradeoff on EURUSD 2016-2026 (1326 vs 1316 trades):
-  - Design A: PF 2.74, AvgR +0.824, MaxDD 3.21%, PnL $601,150
-  - Design B: PF 2.69, AvgR +0.804, MaxDD 2.67%, PnL $581,625
+Design A vs B tradeoff on EURUSD 2016-2026 (603 vs 595 trades):
+  - Design A: PF 3.57, AvgR +1.075, MaxDD 3.40%, PnL $456,400
+  - Design B: PF 3.40, AvgR +1.050, MaxDD 3.43%, PnL $443,750
 
-Design B trades PnL for risk reduction (-3.2% PnL vs Design A, but
-MaxDD lower and winrate +5.7pp). Kept as opt-in feature flag.
+Design B trades PnL for risk reduction (-2.8% PnL vs Design A, but
+winrate +6.6pp). Kept as opt-in feature flag.
 
 Run from project root:
     python -m scripts.btest_scale_in_design_b
