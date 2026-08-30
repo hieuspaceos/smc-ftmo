@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="filters">
+  <div class="filter-group">
+    <label for="filter-decision">Decision</label>
+    <select id="filter-decision">
+      <option value="">All</option>
+      <option value="accept">accept</option>
+      <option value="reject">reject</option>
+      <option value="blocked_chart">blocked_chart</option>
+      <option value="expired">expired</option>
+      <option value="edit_failed">edit_failed</option>
+      <option value="notified_failed">notified_failed</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="filter-user">User (actor)</label>
+    <input type="text" id="filter-user" placeholder="e.g. tester1" />
+  </div>
+  <div class="filter-group">
+    <label for="filter-csv">Signal CSV</label>
+    <select id="filter-csv">
+      <option value="">(none)</option>
+    </select>
+  </div>
+  <button class="btn btn-primary" id="apply-btn" type="button">Apply</button>
+  <button class="btn btn-secondary" id="export-btn" type="button">Export CSV</button>
+  <span id="event-count" style="font-size: 0.875rem; color: var(--color-text-muted); margin-left: auto;"></span>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>When</th>
+        <th>Event Type</th>
+        <th>Actor</th>
+        <th>Signal ID</th>
+        <th>Payload</th>
+      </tr>
+    </thead>
+    <tbody id="events-tbody">
+      <tr><td colspan="5" class="empty">Loading...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card" id="csv-card" style="display: none;">
+  <div class="card-title">Signal CSV rows</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Source</th><th>Signal ID</th><th>Event</th><th>Side</th><th>Level</th></tr></thead>
+      <tbody id="csv-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  const decisionSel = document.getElementById("filter-decision");
+  const userInput = document.getElementById("filter-user");
+  const csvSel = document.getElementById("filter-csv");
+  const applyBtn = document.getElementById("apply-btn");
+  const exportBtn = document.getElementById("export-btn");
+  const eventCount = document.getElementById("event-count");
+  const eventsTbody = document.getElementById("events-tbody");
+  const csvCard = document.getElementById("csv-card");
+  const csvTbody = document.getElementById("csv-tbody");
+
+  // Populate CSV dropdown
+  fetch("/api/replay").then(r => r.json()).then(d => {
+    csvSel.innerHTML = '<option value="">(none)</option>' +
+      (d.files || []).map(f => `<option value="${f.name}">${f.name}</option>`).join("");
+  });
+
+  function escape(s) {
+    if (s == null) return "";
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function shortJson(s) {
+    if (!s) return "";
+    return s.length > 60 ? escape(s.slice(0, 60)) + "…" : escape(s);
+  }
+  function fmtTime(iso) {
+    if (!iso) return "—";
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  }
+  function badgeType(t) {
+    if (t === "accept") return '<span class="badge badge-accept">accept</span>';
+    if (t === "reject") return '<span class="badge badge-reject">reject</span>';
+    if (t === "blocked_chart") return '<span class="badge badge-blocked">blocked_chart</span>';
+    if (t === "expired") return '<span class="badge badge-blocked">expired</span>';
+    return '<span class="badge badge-neutral">' + escape(t) + '</span>';
+  }
+
+  function buildUrl() {
+    const p = new URLSearchParams();
+    if (decisionSel.value) p.set("decision", decisionSel.value);
+    if (userInput.value) p.set("user", userInput.value);
+    if (csvSel.value) p.set("signal_csv", csvSel.value);
+    p.set("limit", "200");
+    return "/api/audit?" + p.toString();
+  }
+  async function load() {
+    try {
+      const r = await fetch(buildUrl());
+      const data = await r.json();
+      const events = data.events || [];
+      const csvRows = data.csv_rows || [];
+      eventCount.textContent = `${events.length} events`;
+      if (events.length === 0) {
+        eventsTbody.innerHTML = '<tr><td colspan="5" class="empty">No events match the filters.</td></tr>';
+      } else {
+        eventsTbody.innerHTML = events.map(e => `
+          <tr>
+            <td>${fmtTime(e.created_at)}</td>
+            <td>${badgeType(e.event_type)}</td>
+            <td>${escape(e.actor) || "—"}</td>
+            <td><code class="signal-id">${escape((e.signal_id || "")).slice(0, 12)}…</code></td>
+            <td><code>${shortJson(e.payload)}</code></td>
+          </tr>
+        `).join("");
+      }
+      if (csvRows.length > 0) {
+        csvCard.style.display = "";
+        csvTbody.innerHTML = csvRows.slice(0, 100).map(r => `
+          <tr>
+            <td>${escape(r.source)}</td>
+            <td><code class="signal-id">${escape((r.signal_id || "")).slice(0, 12)}…</code></td>
+            <td>${escape(r.event)}</td>
+            <td>${escape(r.side)}</td>
+            <td><code>${escape(r.level)}</code></td>
+          </tr>
+        `).join("");
+      } else {
+        csvCard.style.display = "none";
+      }
+    } catch (e) {
+      eventsTbody.innerHTML = '<tr><td colspan="5" class="empty"><h3>Error</h3><p>' + escape(String(e)) + '</p></td></tr>';
+    }
+  }
+
+  applyBtn.addEventListener("click", load);
+  decisionSel.addEventListener("change", load);
+  exportBtn.addEventListener("click", () => {
+    // Re-fetch and download CSV.
+    fetch(buildUrl()).then(r => r.json()).then(data => {
+      const events = data.events || [];
+      const rows = [["created_at", "event_type", "actor", "signal_id", "payload"]];
+      events.forEach(e => rows.push([e.created_at, e.event_type, e.actor, e.signal_id, e.payload]));
+      const csv = rows.map(r => r.map(c => '"' + String(c ?? "").replace(/"/g, '""') + '"').join(",")).join("\n");
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "audit_" + new Date().toISOString().replace(/[:.]/g, "-") + ".csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  });
+  load();
+</script>
+{% endblock %}

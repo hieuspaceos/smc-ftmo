@@ -131,3 +131,78 @@ Mở browser:
 - Domain (nếu dùng named tunnel): $10-15/năm nếu chưa có
 
 **Tổng chi phí thêm: $0-15/năm**.
+---
+
+## Phase 05: Vue SPA on Cloudflare Pages
+
+The Phase 05 admin dashboard is a Vue 3 SPA + FastAPI backend.
+
+### Architecture
+
+```
+[Trader browser]
+     ↓ HTTPS (Cloudflare Access + 2FA)
+[Cloudflare CDN]
+     ├── /admin/*         → [Cloudflare Pages] Vue 3 SPA (static dist/)
+     │                          │
+     │                          │ fetch /api/*
+     ↓                          ↓
+[Cloudflare Tunnel]   ←──  [FastAPI on 127.0.0.1:8501] → bot DB
+```
+
+### Build Vue SPA (deployed to Cloudflare Pages)
+
+The Vue SPA source lives at `bot/dashboard/spa/` (Phase 05 builds this).
+Cloudflare Pages picks up the directory and builds automatically:
+
+1. **Connect Cloudflare Pages to your GitHub repo**:
+   - Cloudflare dashboard → Workers & Pages → Create → Pages → Connect to Git
+   - Select `hieuspaceos/smc-ftmo`
+   - Project name: `smc-bot-admin`
+   - Build command: `cd bot/dashboard/spa && npm ci && npm run build`
+   - Build output: `bot/dashboard/spa/dist`
+   - Root directory: `bot/dashboard/spa`
+   - Environment variable: `VITE_API_BASE = https://your-bot.trycloudflare.com`
+
+2. **Custom domain (optional)**:
+   - Pages project → Custom domains → `admin.your-domain.com`
+
+### Configure Cloudflare Access (2FA + email allowlist)
+
+1. Cloudflare Zero Trust → Access → Applications → Add
+2. Application type: Self-hosted
+3. Application domain: `smc-bot-admin.pages.dev` (or your custom domain)
+4. Policy name: `SMC Admin Allowlist`
+5. Action: Allow
+6. Include: Emails → `your-email@example.com`
+7. Session duration: 24 hours
+8. **Enforce 2FA**: In Identity providers → enforce email OTP
+
+### Local development (no Cloudflare)
+
+```bash
+# Terminal 1: FastAPI dashboard
+PYTHONPATH=src:. uvicorn bot.dashboard.web:app --host 127.0.0.1 --port 8501
+
+# Terminal 2: Vue SPA dev server (after `npm install`)
+cd bot/dashboard/spa && npm run dev
+# Open http://localhost:5173 (Vite dev server proxies /api → :8501)
+```
+
+### SSR fallback (`/admin-legacy`)
+
+If Cloudflare Pages is unreachable or the Vue SPA fails to load, FastAPI
+serves Jinja2-rendered HTML at `/admin-legacy` (the Live Queue with full
+Tailwind design tokens, no JS required). This is the graceful-degradation
+path and proves useful during development.
+
+### Design tokens
+
+The dashboard uses the `ak-ui-ux-pro-max` design system:
+- **Pattern**: Real-Time Operations
+- **Style**: Data-Dense Dashboard
+- **Colors**: Primary `#2563EB`, CTA `#F97316`, Background `#F8FAFC` (light) / `#0F172A` (dark)
+- **Typography**: Fira Code (mono, headings) + Fira Sans (body)
+- **Chart**: Candlestick (TradingView style for Replay)
+
+All tokens defined as CSS custom properties in `bot/dashboard/templates/base.html`.

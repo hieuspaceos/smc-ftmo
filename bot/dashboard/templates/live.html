@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="kpi" id="kpi-cards">
+  <div class="kpi-card">
+    <div class="kpi-value" id="kpi-total">—</div>
+    <div class="kpi-label">Total Alerts (24h)</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-value" id="kpi-pending" style="color: var(--color-warning);">—</div>
+    <div class="kpi-label">Pending Decision</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-value" id="kpi-accepted" style="color: var(--color-success);">—</div>
+    <div class="kpi-label">Accepted</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-value" id="kpi-rejected" style="color: var(--color-danger);">—</div>
+    <div class="kpi-label">Rejected</div>
+  </div>
+</div>
+
+<div class="filters">
+  <div class="filter-group">
+    <label for="filter-state">State</label>
+    <select id="filter-state">
+      <option value="">All states</option>
+      <option value="chart-qualified">Chart-qualified</option>
+      <option value="watch">Watch</option>
+      <option value="blocked">Blocked</option>
+      <option value="no-signal">No-signal</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="filter-limit">Limit</label>
+    <select id="filter-limit">
+      <option value="50">50</option>
+      <option value="100" selected>100</option>
+      <option value="200">200</option>
+      <option value="500">500</option>
+    </select>
+  </div>
+  <button class="btn btn-secondary" id="refresh-btn" type="button">Refresh</button>
+  <span id="last-updated" style="font-size: 0.8rem; color: var(--color-text-muted); margin-left: auto;"></span>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Signal ID</th>
+        <th>Symbol</th>
+        <th>TF</th>
+        <th>Side</th>
+        <th>Event</th>
+        <th>State</th>
+        <th>Level</th>
+        <th>Decision</th>
+        <th>Decision Actor</th>
+        <th>Received</th>
+      </tr>
+    </thead>
+    <tbody id="alerts-tbody" data-initial='{{ alerts_json | tojson if alerts_json else "[]" }}'>
+      <tr><td colspan="10" class="empty">Loading...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+  const tbody = document.getElementById("alerts-tbody");
+  const kpiTotal = document.getElementById("kpi-total");
+  const kpiPending = document.getElementById("kpi-pending");
+  const kpiAccepted = document.getElementById("kpi-accepted");
+  const kpiRejected = document.getElementById("kpi-rejected");
+  const lastUpdated = document.getElementById("last-updated");
+  const filterState = document.getElementById("filter-state");
+  const filterLimit = document.getElementById("filter-limit");
+  const refreshBtn = document.getElementById("refresh-btn");
+
+  function badgeClass(state) {
+    const s = (state || "").toLowerCase();
+    if (s === "chart-qualified") return "badge-chart";
+    if (s === "watch") return "badge-watch";
+    if (s === "blocked") return "badge-blocked";
+    return "badge-neutral";
+  }
+  function decisionBadge(d) {
+    if (d === "accept") return '<span class="badge badge-accept">accept</span>';
+    if (d === "reject") return '<span class="badge badge-reject">reject</span>';
+    return '<span class="badge badge-neutral">—</span>';
+  }
+  function fmtTime(iso) {
+    if (!iso) return "—";
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  }
+  async function load() {
+    const state = filterState.value;
+    const limit = filterLimit.value;
+    const url = "/api/alerts?limit=" + limit + (state ? "&state=" + encodeURIComponent(state) : "");
+    try {
+      const r = await fetch(url);
+      const data = await r.json();
+      const rows = data.rows || [];
+      // KPIs
+      kpiTotal.textContent = rows.length;
+      kpiPending.textContent = rows.filter(r => !r.decision).length;
+      kpiAccepted.textContent = rows.filter(r => r.decision === "accept").length;
+      kpiRejected.textContent = rows.filter(r => r.decision === "reject").length;
+      // Table
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="empty"><h3>No alerts yet</h3><p>Send a test alert via <code>POST /webhooks/tradingview</code></p></td></tr>';
+      } else {
+        tbody.innerHTML = rows.map(r => `
+          <tr>
+            <td><code class="signal-id">${(r.signal_id || "").slice(0, 12)}…</code></td>
+            <td>${r.symbol || ""}</td>
+            <td>${r.tf || ""}</td>
+            <td>${r.side || ""}</td>
+            <td>${r.event || ""}</td>
+            <td><span class="badge ${badgeClass(r.state)}">${r.state || ""}</span></td>
+            <td><code>${r.level || ""}</code></td>
+            <td>${decisionBadge(r.decision)}</td>
+            <td>${r.decision_actor || "—"}</td>
+            <td>${fmtTime(r.received_at)}</td>
+          </tr>
+        `).join("");
+      }
+      lastUpdated.textContent = "Updated: " + new Date().toLocaleTimeString();
+    } catch (e) {
+      tbody.innerHTML = '<tr><td colspan="10" class="empty"><h3>Error loading</h3><p>' + e + '</p></td></tr>';
+    }
+  }
+  refreshBtn.addEventListener("click", load);
+  filterState.addEventListener("change", load);
+  filterLimit.addEventListener("change", load);
+  load();
+  // Auto-refresh every 10s
+  setInterval(load, 10000);
+</script>
+{% endblock %}

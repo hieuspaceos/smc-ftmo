@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="filters">
+  <div class="filter-group">
+    <label for="file-select">Signal CSV</label>
+    <select id="file-select">
+      <option value="">Loading...</option>
+    </select>
+  </div>
+  <button class="btn btn-secondary" id="load-btn" type="button">Load CSV</button>
+  <span id="row-count" style="font-size: 0.875rem; color: var(--color-text-muted); margin-left: auto;"></span>
+</div>
+
+<div class="card">
+  <div id="chart" style="height: 500px;"></div>
+</div>
+
+<div class="table-wrap" id="table-wrap" style="display: none;">
+  <table>
+    <thead>
+      <tr>
+        <th>Source</th>
+        <th>Run ID</th>
+        <th>Signal ID</th>
+        <th>Event</th>
+        <th>Symbol</th>
+        <th>TF</th>
+        <th>Side</th>
+        <th>Level</th>
+        <th>State</th>
+        <th>Bar Time</th>
+        <th>Decision</th>
+      </tr>
+    </thead>
+    <tbody id="csv-tbody"></tbody>
+  </table>
+</div>
+
+<script src="https://cdn.plot.ly/plotly-2.34.0.min.js" charset="utf-8"></script>
+<script>
+  const fileSelect = document.getElementById("file-select");
+  const loadBtn = document.getElementById("load-btn");
+  const rowCount = document.getElementById("row-count");
+  const tableWrap = document.getElementById("table-wrap");
+  const csvTbody = document.getElementById("csv-tbody");
+
+  // Load file list
+  fetch("/api/replay").then(r => r.json()).then(data => {
+    fileSelect.innerHTML = '<option value="">-- select signal CSV --</option>' +
+      (data.files || []).map(f => `<option value="${f.name}">${f.name} (${(f.size/1024).toFixed(1)} KB)</option>`).join("");
+  });
+
+  function decisionColor(d) {
+    if (d === "accept") return "#22C55E";
+    if (d === "reject") return "#EF4444";
+    return "#94A3B8";
+  }
+
+  loadBtn.addEventListener("click", load);
+  fileSelect.addEventListener("change", load);
+
+  async function load() {
+    const name = fileSelect.value;
+    if (!name) return;
+    const r = await fetch("/api/replay/csv/" + encodeURIComponent(name));
+    const data = await r.json();
+    const rows = data.rows || [];
+    rowCount.textContent = `${rows.length} rows`;
+    tableWrap.style.display = "";
+    csvTbody.innerHTML = rows.map(r => `
+      <tr>
+        <td>${r.source || ""}</td>
+        <td><code class="signal-id">${(r.run_id || "").slice(0, 12)}…</code></td>
+        <td><code class="signal-id">${(r.signal_id || "").slice(0, 12)}…</code></td>
+        <td>${r.event || ""}</td>
+        <td>${r.symbol || ""}</td>
+        <td>${r.tf || ""}</td>
+        <td>${r.side || ""}</td>
+        <td><code>${r.level || ""}</code></td>
+        <td>${r.state || ""}</td>
+        <td>${r.bar_time || ""}</td>
+        <td>${r.decision || "—"}</td>
+      </tr>
+    `).join("");
+
+    // Plotly: bar_time vs level colored by decision (we don't have OHLC, so
+    // scatter is the appropriate chart — see MASTER.md chart guide: candlestick
+    // requires OHLC data which we don't have in this CSV).
+    const x = rows.map(r => Number(r.bar_time)).filter(Number.isFinite);
+    const y = rows.map(r => Number(r.level)).filter(Number.isFinite);
+    const c = rows.map(r => decisionColor(r.decision));
+    const trace = {
+      x, y, mode: "markers", type: "scatter",
+      marker: { size: 10, color: c, line: { width: 1, color: "#1E293B" } },
+      text: rows.map(r => `${r.event || ""} ${r.symbol || ""} ${r.decision || ""}`),
+      hovertemplate: "<b>%{text}</b><br>level=%{y}<br>bar=%{x}<extra></extra>",
+    };
+    Plotly.newPlot("chart", [trace], {
+      margin: { t: 30, l: 60, r: 20, b: 50 },
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      font: { family: "Fira Sans, system-ui", color: "#1E293B" },
+      xaxis: { title: "Bar Time (epoch)" },
+      yaxis: { title: "Level" },
+      showlegend: false,
+    }, { displayModeBar: true, responsive: true });
+  }
+</script>
+{% endblock %}
