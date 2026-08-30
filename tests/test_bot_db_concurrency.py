@@ -11,9 +11,9 @@ import time
 
 import pytest
 
-from bot.storage.db import BotDB, init_db
-from bot.webhook.payload import AlertPayload, parse_payload
-from bot.webhook.server import _RateLimiter
+from smc_bot_core.db import BotDB, init_db
+from smc_bot_webhook.payload import AlertPayload, parse_payload
+from smc_bot_webhook.server import _RateLimiter
 
 
 VALID = (
@@ -179,7 +179,7 @@ class TestEdgeCases:
 
 class TestLogThrottling:
     def test_throttled_logger_emits_first_then_suppresses(self) -> None:
-        from bot.webhook.server import _ThrottledLogger
+        from smc_bot_webhook.server import _ThrottledLogger
         import logging as _logging
 
         # Capture log records.
@@ -208,14 +208,14 @@ class TestAppSettingsValidation:
         import os
         os.environ["SMC_WEBHOOK_TOKEN"] = "short"
         os.environ["SMC_TRUSTED_PROXY"] = "0"
-        from bot.webhook.server import AppSettings
+        from smc_bot_webhook.server import AppSettings
         with pytest.raises(RuntimeError, match="too short"):
             AppSettings.from_env()
 
     def test_empty_secret_rejected(self) -> None:
         import os
         os.environ["SMC_WEBHOOK_TOKEN"] = ""
-        from bot.webhook.server import AppSettings
+        from smc_bot_webhook.server import AppSettings
         with pytest.raises(RuntimeError, match="required"):
             AppSettings.from_env()
 
@@ -245,7 +245,7 @@ class TestAppSettingsValidation:
 class TestPayloadIdempotencyEdgeCases:
     def test_level_precision_difference_same_signal_id(self) -> None:
         """Different floating-point representations of same price must hash to same signal_id."""
-        from bot.webhook.payload import compute_signal_id
+        from smc_bot_webhook.payload import compute_signal_id
 
         sig1 = compute_signal_id("bos", "EURUSD", "M15", "long", 1.1, 1700000000, -1, -1)
         sig2 = compute_signal_id("bos", "EURUSD", "M15", "long", 1.10000000, 1700000000, -1, -1)
@@ -253,7 +253,7 @@ class TestPayloadIdempotencyEdgeCases:
 
     def test_signal_id_distinguishes_zero_vs_negative_one(self) -> None:
         """ob_id=0 (valid) vs ob_id=-1 (N/A) must produce different signal_ids."""
-        from bot.webhook.payload import compute_signal_id
+        from smc_bot_webhook.payload import compute_signal_id
 
         sig_zero = compute_signal_id("ob_activated", "EURUSD", "M15", "long", 1.1, 1700000000, 0, -1)
         sig_neg = compute_signal_id("ob_activated", "EURUSD", "M15", "long", 1.1, 1700000000, -1, -1)
@@ -261,7 +261,7 @@ class TestPayloadIdempotencyEdgeCases:
 
     def test_signal_id_changes_with_dir_normalization(self) -> None:
         """Bullish vs bearish (which normalize to long/short) — verify after normalization they differ."""
-        from bot.webhook.payload import compute_signal_id
+        from smc_bot_webhook.payload import compute_signal_id
 
         sig_long = compute_signal_id("bos", "EURUSD", "M15", "long", 1.1, 1700000000, -1, -1)
         sig_short = compute_signal_id("bos", "EURUSD", "M15", "short", 1.1, 1700000000, -1, -1)

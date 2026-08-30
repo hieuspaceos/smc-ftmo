@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from bot.notify.discord import FakeDiscordTransport
-from bot.notify.telegram import FakeTelegramTransport
-from bot.storage.db import BotDB
-from bot.webhook.security import SecurityConfig
-from bot.webhook.server import AppSettings, create_app
+from smc_bot_webhook.notify.discord import FakeDiscordTransport
+from smc_bot_webhook.notify.telegram import FakeTelegramTransport
+from smc_bot_core.db import BotDB
+from smc_bot_webhook.security import SecurityConfig
+from smc_bot_webhook.server import AppSettings, create_app
 
 TV_IP = "52.89.214.238"
 VALID = (
@@ -53,8 +53,8 @@ def _client_with_dispatch(
         trusted_proxy=True,
     )
     # Build REAL dispatchers wrapping our fakes.
-    from bot.notify.telegram import TelegramDispatcher
-    from bot.notify.discord import DiscordMirror
+    from smc_bot_webhook.notify.telegram import TelegramDispatcher
+    from smc_bot_webhook.notify.discord import DiscordMirror
     real_dispatcher = TelegramDispatcher(
         tg_tx, chat_id=12345, allowed_user_ids={456},
         max_retries=3, backoff_base_seconds=0.001,

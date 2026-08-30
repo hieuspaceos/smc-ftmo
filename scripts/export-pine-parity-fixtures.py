@@ -2,6 +2,14 @@
 """Export deterministic Pine parity fixtures from the Python SMC engine."""
 from __future__ import annotations
 
+import sys
+from pathlib import Path as _Path
+_ROOT = _Path(__file__).resolve().parent.parent
+for _pkg in ("smc_engine", "smc_bot_core", "smc_bot_webhook", "smc_bot_backtest", "smc_bot_dashboard"):
+    _src = _ROOT / "packages" / _pkg / "src"
+    if _src.exists() and str(_src) not in sys.path:
+        sys.path.insert(0, str(_src))
+
 import argparse
 import hashlib
 import json
@@ -13,7 +21,11 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+# Workspace-aware path setup: each package exposes its own src/.
+for _pkg in ("smc_engine", "smc_bot_core", "smc_bot_webhook", "smc_bot_backtest", "smc_bot_dashboard"):
+    _src = ROOT / "packages" / _pkg / "src"
+    if _src.exists() and str(_src) not in sys.path:
+        sys.path.insert(0, str(_src))
 
 from smc_engine.context import compute_dealing_range_context  # noqa: E402
 from smc_engine.displacement import calculate_atr, detect_range_expansion  # noqa: E402

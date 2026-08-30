@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smc_bot_webhook"
+version = "0.2.0"
+description = "FastAPI webhook + Telegram dispatcher + 11-gate validator + MT5 bridge"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7,<3.0",
+    "httpx>=0.27,<1.0",
+    "python-dotenv>=1.0,<2.0",
+    "python-telegram-bot>=21.0,<23.0",
+    "smc_engine>=0.3.0",
+    "smc_bot_core>=0.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["smc_bot_webhook*"]

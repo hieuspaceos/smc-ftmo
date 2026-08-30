@@ -1,0 +1,25 @@
+[project]
+name = "smc-ftmo-workspace"
+version = "0.3.0"
+description = "SMC FTMO bot workspace — engine + bot packages + dashboard"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+    "sqlalchemy>=2.0",
+    "streamlit>=1.30",
+    "plotly>=5.18",
+    "ta>=0.11",
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7,<3.0",
+    "httpx>=0.27,<1.0",
+    "python-dotenv>=1.0,<2.0",
+    "python-telegram-bot>=21.0,<23.0",
+    "pyarrow>=14.0",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests", "packages"]
