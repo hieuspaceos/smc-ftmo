@@ -411,6 +411,7 @@ class TestWebhookAcceptExecutesSignal:
                 url_secret="smoke-test-secret-not-for-prod", rate_limit_per_min=1000,
             ),
             trusted_proxy=True,
+            telegram_callback_secret="smoke-telegram-callback-secret",
         )
         app = create_app(settings=settings, db=db, dispatcher=dispatcher)
         from fastapi.testclient import TestClient
@@ -422,7 +423,10 @@ class TestWebhookAcceptExecutesSignal:
         r = client.post(
             "/telegram/callback?token=smoke-test-secret-not-for-prod",
             json={"callback_data": accept_cb, "from_user_id": 99},
-            headers={"x-forwarded-for": "52.89.214.238"},
+            headers={
+                "x-forwarded-for": "52.89.214.238",
+                "X-Telegram-Bot-Api-Secret-Token": "smoke-telegram-callback-secret",
+            },
         )
         assert r.status_code == 200
         body = r.json()
@@ -477,6 +481,7 @@ class TestWebhookAcceptExecutesSignal:
                 url_secret="smoke-test-secret-not-for-prod", rate_limit_per_min=1000,
             ),
             trusted_proxy=True,
+            telegram_callback_secret="smoke-telegram-callback-secret",
         )
         app = create_app(settings=settings, db=db, dispatcher=dispatcher)
         from fastapi.testclient import TestClient
@@ -486,7 +491,10 @@ class TestWebhookAcceptExecutesSignal:
         r = client.post(
             "/telegram/callback?token=smoke-test-secret-not-for-prod",
             json={"callback_data": accept_cb, "from_user_id": 99},
-            headers={"x-forwarded-for": "52.89.214.238"},
+            headers={
+                "x-forwarded-for": "52.89.214.238",
+                "X-Telegram-Bot-Api-Secret-Token": "smoke-telegram-callback-secret",
+            },
         )
         assert r.status_code == 200
         assert r.json()["execution"]["state"] == "queued"

@@ -48,7 +48,7 @@ URL = "/webhooks/tradingview?token=test-secret-do-not-use-in-prod"
 def _cleanup(path: Path) -> None:
     try:
         path.unlink()
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError):
         pass
 
 

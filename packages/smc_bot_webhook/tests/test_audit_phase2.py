@@ -31,7 +31,7 @@ VALID = (
 def _cleanup(p: Path) -> None:
     try:
         p.unlink()
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError):
         pass
 
 

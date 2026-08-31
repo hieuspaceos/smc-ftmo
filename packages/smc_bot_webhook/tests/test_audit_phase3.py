@@ -46,7 +46,7 @@ GOOD_SID = "1c54f6c631e1fc3d"
 def _cleanup(p: Path) -> None:
     try:
         p.unlink()
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError):
         pass
 
 
@@ -346,6 +346,7 @@ class TestTelegramEndpointEdges:
                 rate_limit_per_min=1000,
             ),
             trusted_proxy=True,
+            telegram_callback_secret="test-telegram-callback-secret",
         )
         tg = FakeTelegramTransport()
         dc = FakeDiscordTransport()
@@ -373,7 +374,10 @@ class TestTelegramEndpointEdges:
             resp = client.post(
                 "/telegram/command?token=test-secret-do-not-use-in-prod",
                 json={"text": "", "from_user_id": 456},
-                headers={"x-forwarded-for": "52.89.214.238"},
+            headers={
+                "x-forwarded-for": "52.89.214.238",
+                "X-Telegram-Bot-Api-Secret-Token": "test-telegram-callback-secret",
+            }
             )
             assert resp.status_code == 200
             assert resp.json()["handled"] is False
@@ -390,7 +394,10 @@ class TestTelegramEndpointEdges:
             resp = client.post(
                 "/telegram/command?token=test-secret-do-not-use-in-prod",
                 json={"from_user_id": 456},
-                headers={"x-forwarded-for": "52.89.214.238"},
+            headers={
+                "x-forwarded-for": "52.89.214.238",
+                "X-Telegram-Bot-Api-Secret-Token": "test-telegram-callback-secret",
+            }
             )
             assert resp.status_code == 200
         finally:
@@ -406,7 +413,10 @@ class TestTelegramEndpointEdges:
             resp = client.post(
                 "/telegram/command?token=test-secret-do-not-use-in-prod",
                 json={"text": "/ack risk_ok extra", "from_user_id": 456},
-                headers={"x-forwarded-for": "52.89.214.238"},
+            headers={
+                "x-forwarded-for": "52.89.214.238",
+                "X-Telegram-Bot-Api-Secret-Token": "test-telegram-callback-secret",
+            }
             )
             assert resp.status_code == 200
             assert "usage" in resp.json()["reason"]
@@ -502,19 +512,26 @@ class TestCallbackWithDisabledDispatcher:
                     rate_limit_per_min=1000,
                 ),
                 trusted_proxy=True,
+                telegram_callback_secret="test-telegram-callback-secret",
             )
             app = create_app(settings=settings, db=db)
             client = TestClient(app)
             resp = client.post(
                 "/telegram/callback?token=test-secret-do-not-use-in-prod",
                 json={"callback_data": f"accept:{GOOD_SID}:nonce1234", "from_user_id": 456},
-                headers={"x-forwarded-for": "52.89.214.238"},
+            headers={
+                "x-forwarded-for": "52.89.214.238",
+                "X-Telegram-Bot-Api-Secret-Token": "test-telegram-callback-secret",
+            }
             )
             # Disabled dispatcher returns None from handle_callback → 200 "ignored".
             assert resp.status_code == 200
             assert resp.json()["decision"] == "ignored"
         finally:
-            db_path.unlink(missing_ok=True)
+            try:
+                db_path.unlink()
+            except (FileNotFoundError, PermissionError):
+                pass
 
 
 # ---------------------------------------------------------------------------

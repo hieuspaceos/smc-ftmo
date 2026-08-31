@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import time
+import os
 from datetime import datetime, timezone
 from pathlib import Path
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -39,9 +39,18 @@ VALID_PIPE = (
 
 
 def _cleanup(p: Path) -> None:
+    """Best-effort delete of db file + parent dir. Windows holds SQLite
+    file lock after TestClient closes; ignore PermissionError on this
+    platform. The mkdtemp parent directory is removed in a second pass."""
+    import shutil
     try:
         p.unlink()
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError):
+        pass
+    try:
+        if p.parent.exists() and p.parent.name.startswith("test_accept_"):
+            shutil.rmtree(p.parent, ignore_errors=True)
+    except (FileNotFoundError, PermissionError):
         pass
 
 
@@ -388,7 +397,9 @@ class TestParseAckCallback:
 
 class TestAcceptRevalidation:
     def _setup_app(self) -> tuple[TestClient, BotDB, FakeTelegramTransport, Path]:
-        db_path = Path(f"output/test_accept_{int(time.time() * 1000000)}.db")
+        import tempfile
+        tmp_dir = Path(tempfile.mkdtemp(prefix="test_accept_"))
+        db_path = tmp_dir / "bot.db"
         db = BotDB(db_path)
         settings = AppSettings(
             url_secret="test-secret-do-not-use-in-prod",
@@ -398,6 +409,7 @@ class TestAcceptRevalidation:
                 rate_limit_per_min=1000,
             ),
             trusted_proxy=True,
+            telegram_callback_secret="test-telegram-callback-secret",
         )
         tg = FakeTelegramTransport()
         dc = FakeDiscordTransport()
@@ -434,7 +446,10 @@ class TestAcceptRevalidation:
             resp = client.post(
                 "/telegram/callback?token=test-secret-do-not-use-in-prod",
                 json={"callback_data": accept_cb, "from_user_id": 456},
-                headers={"x-forwarded-for": "52.89.214.238"},
+                headers={
+                    "x-forwarded-for": "52.89.214.238",
+                    "X-Telegram-Bot-Api-Secret-Token": "test-telegram-callback-secret",
+                }
             )
             assert resp.status_code == 409
             body = resp.json()
@@ -457,13 +472,19 @@ class TestAcceptRevalidation:
                 client.post(
                     "/telegram/command?token=test-secret-do-not-use-in-prod",
                     json={"text": f"/ack {name}", "from_user_id": "456"},
-                    headers={"x-forwarded-for": "52.89.214.238"},
+                headers={
+                    "x-forwarded-for": "52.89.214.238",
+                    "X-Telegram-Bot-Api-Secret-Token": "test-telegram-callback-secret",
+                }
                 )
             accept_cb = self._capture_accept_cb(tg)
             resp = client.post(
                 "/telegram/callback?token=test-secret-do-not-use-in-prod",
                 json={"callback_data": accept_cb, "from_user_id": 456},
-                headers={"x-forwarded-for": "52.89.214.238"},
+                headers={
+                    "x-forwarded-for": "52.89.214.238",
+                    "X-Telegram-Bot-Api-Secret-Token": "test-telegram-callback-secret",
+                }
             )
             assert resp.status_code == 200
             assert resp.json()["decision"] == "accepted"
@@ -484,7 +505,10 @@ class TestAcceptRevalidation:
             resp = client.post(
                 "/telegram/callback?token=test-secret-do-not-use-in-prod",
                 json={"callback_data": accept_cb, "from_user_id": 999},
-                headers={"x-forwarded-for": "52.89.214.238"},
+                headers={
+                    "x-forwarded-for": "52.89.214.238",
+                    "X-Telegram-Bot-Api-Secret-Token": "test-telegram-callback-secret",
+                }
             )
             assert resp.status_code == 403
         finally:
@@ -510,7 +534,10 @@ class TestAcceptRevalidation:
             resp = client.post(
                 "/telegram/callback?token=test-secret-do-not-use-in-prod",
                 json={"callback_data": reject_cb, "from_user_id": 456},
-                headers={"x-forwarded-for": "52.89.214.238"},
+                headers={
+                    "x-forwarded-for": "52.89.214.238",
+                    "X-Telegram-Bot-Api-Secret-Token": "test-telegram-callback-secret",
+                }
             )
             assert resp.status_code == 200
             snap = store.snapshot()
@@ -534,7 +561,10 @@ class TestAcceptRevalidation:
             resp = client.post(
                 "/telegram/command?token=test-secret-do-not-use-in-prod",
                 json={"text": "/ack risk_ok", "from_user_id": 999},
-                headers={"x-forwarded-for": "52.89.214.238"},
+                headers={
+                    "x-forwarded-for": "52.89.214.238",
+                    "X-Telegram-Bot-Api-Secret-Token": "test-telegram-callback-secret",
+                }
             )
             assert resp.status_code == 403
             assert resp.json()["reason"] == "user not allowed"
@@ -553,7 +583,10 @@ class TestAcceptRevalidation:
             resp = client.post(
                 "/telegram/command?token=test-secret-do-not-use-in-prod",
                 json={"text": "/ack risk_ok", "from_user_id": 456},
-                headers={"x-forwarded-for": "52.89.214.238"},
+                headers={
+                    "x-forwarded-for": "52.89.214.238",
+                    "X-Telegram-Bot-Api-Secret-Token": "test-telegram-callback-secret",
+                }
             )
             assert resp.status_code == 200
             assert resp.json()["handled"] is True
