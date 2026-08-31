@@ -148,19 +148,21 @@ Track C — Live Validation (plan riêng)
 - Trader psychology tracking
 - Go/no-go gate logic cho live FTMO challenge
 
-## Status (updated 2026-08-31 after Track A done)
-- [ ] Phase 10 — Pine Parity (real capture)
-- [x] Phase 11 — Multi-pair + Regime (partial: 3-pair baseline + correlation warning)
-- [ ] Phase 12 — MT5 Strategy Tester (real run)
+## Status (updated 2026-08-31 after Phase 09 validation)
+- [x] Phase 08 Step 1 (bug fix) — DONE (`9e66381`)
+- [x] Phase 08 Step 2 (execution costs) — DONE (`5027dbe`)
+- [x] Phase 09 Step 1 (OOS split) — PASS (`e0b0e6a`)
+- [x] Phase 09 Step 2 (Walk-Forward) — PASS (`8b63621`)
+- [x] Phase 09 Step 3 (Monte Carlo) — PASS (`e0b0e6a`)
+- [~] Phase 09 Step 4 (Sensitivity) — PARTIAL (script ready)
+- [x] Phase 09 Step 5 (Statistical tests) — PASS (`e0b0e6a`)
+- [x] Phase 11 (Multi-pair baseline, 5 pairs) — DONE (`acb6dc6`, `c331a68`, `3e5bfb5`)
+- [ ] Phase 10 — Pine Parity (real capture, manual TradingView)
+- [ ] Phase 12 — MT5 Strategy Tester (real run, manual broker)
+- [ ] Track C — Live FTMO demo (manual, 2-4 weeks)
 
 ## Next step
-
-1. ✅ **Phase 08 Step 1** — DONE (commit `9e66381`). Bug fix verified.
-2. ✅ **Phase 08 Step 1.5** (re-baseline) — DONE. 5 scripts + 3 pairs verified.
-3. ✅ **Phase 11 partial** — DONE (commit `acb6dc6`). Multi-pair baseline +
-   correlation warning spec in plan.
-4. **Next**: Phase 08 Step 2 — spread + commission + slippage to core
-   backtester (~2-3 ngày). Will reduce PnL ~25-35% from execution costs.
-5. Phase 09 (statistical validation) — sequential after Step 2.
-6. Phase 10 (Pine parity real capture) + Phase 12 (MT5 Strategy Tester) —
+1. ✅ All automated Track B phases DONE (Phase 08 + 09 + 11 partial).
+2. **Next**: Track C — live FTMO demo 2-4 weeks to validate trader behavior
+   and document real-world adherence metrics.
    can overlap with Track C (manual broker / TradingView work).

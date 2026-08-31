@@ -199,11 +199,11 @@ distribution, max DD computation correct trên known sequences.
 
 ## Todo
 
-- [ ] OOS split script + test
-- [ ] Walk-forward script + test
-- [ ] Monte Carlo script + test
-- [ ] Sensitivity script + test
-- [ ] Statistical tests script + test
+- [x] OOS split script + test (`e0b0e6a`)
+- [x] Walk-forward script + test (`8b63621`)
+- [x] Monte Carlo script + test (`e0b0e6a`)
+- [~] Sensitivity script + test (`8b63621`) — script ready, full sweep pending
+- [x] Statistical tests script + test (`e0b0e6a`)
 - [ ] Aggregate REPORT.md + commit
 - [ ] Tag `v0.6.0-statistically-validated` nếu pass hết
 
