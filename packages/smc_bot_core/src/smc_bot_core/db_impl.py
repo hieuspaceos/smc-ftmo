@@ -45,7 +45,13 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> Path:
     p = Path(db_path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(str(p)) as conn:
+        conn.row_factory = sqlite3.Row
         conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        # Phase 02 (audit fix): add pnl column to execution_log for
+        # existing DBs that pre-date the column. Idempotent.
+        cols = [row["name"] for row in conn.execute("PRAGMA table_info(execution_log)").fetchall()]
+        if "pnl" not in cols:
+            conn.execute("ALTER TABLE execution_log ADD COLUMN pnl REAL")
         conn.commit()
     return p
 
@@ -319,12 +325,15 @@ class BotDB:
         payload: str | None = None,
         mt5_ticket: str | None = None,
         fill_price: float | None = None,
+        pnl: float | None = None,
         error: str | None = None,
     ) -> int:
         """Insert or update execution_log row keyed by (signal_id, transport).
 
         Returns the row id. If a row already exists for this (signal_id,
-        transport), updates state + ack metadata + updated_at.
+        transport), updates state + ack metadata + updated_at. ``pnl`` is
+        set when the EA reports a realized P&L (e.g. on 'filled' / 'closed'
+        state); pass None to leave the existing value intact.
         """
         import json as _json
         from datetime import datetime as _dt, timezone as _tz
@@ -339,20 +348,67 @@ class BotDB:
                 cur = conn.execute(
                     """INSERT INTO execution_log
                        (signal_id, transport, state, payload, mt5_ticket,
-                        fill_price, error, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        fill_price, pnl, error, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         signal_id, transport, state, payload,
-                        mt5_ticket, fill_price, error, now, now,
+                        mt5_ticket, fill_price, pnl, error, now, now,
                     ),
                 )
                 return int(cur.lastrowid)
             conn.execute(
                 """UPDATE execution_log SET state = ?, payload = ?, mt5_ticket = ?,
-                   fill_price = ?, error = ?, updated_at = ? WHERE id = ?""",
-                (state, payload, mt5_ticket, fill_price, error, now, row["id"]),
+                   fill_price = ?, pnl = COALESCE(?, pnl), error = ?, updated_at = ?
+                   WHERE id = ?""",
+                (state, payload, mt5_ticket, fill_price, pnl, error, now, row["id"]),
             )
             return int(row["id"])
+
+    # --- Phase 02 (audit fix): FTMO guard aggregations ---
+    def get_daily_pnl(self, since_iso: str) -> float:
+        """Sum of realized P&L across all closed/filled executions since
+        ``since_iso`` (UTC ISO-8601). Used to enforce daily loss limit.
+
+        Returns 0.0 when no rows. Rows with NULL pnl are skipped.
+        """
+        with self._conn_ctx() as conn:
+            cur = conn.execute(
+                "SELECT COALESCE(SUM(pnl), 0.0) AS total FROM execution_log "
+                "WHERE created_at >= ? AND pnl IS NOT NULL "
+                "AND state IN ('filled', 'closed')",
+                (since_iso,),
+            )
+            row = cur.fetchone()
+            return float(row["total"]) if row else 0.0
+
+    def get_trades_today(self, since_iso: str) -> int:
+        """Count of executions accepted today (queued or beyond)."""
+        with self._conn_ctx() as conn:
+            cur = conn.execute(
+                "SELECT COUNT(*) AS c FROM execution_log "
+                "WHERE created_at >= ? "
+                "AND state IN ('queued', 'sent', 'acked', 'filled', 'closed')",
+                (since_iso,),
+            )
+            row = cur.fetchone()
+            return int(row["c"]) if row else 0
+
+    def get_open_positions(self) -> dict[str, int]:
+        """Per-symbol count of positions currently open (state='filled' with
+        no closing event yet). For Phase 02 we use state='filled' as a proxy
+        for "open" — a more complete implementation would track a separate
+        open_positions table populated by EA close events.
+        """
+        with self._conn_ctx() as conn:
+            cur = conn.execute(
+                "SELECT symbol, COUNT(*) AS c FROM alert_log a "
+                "WHERE EXISTS (SELECT 1 FROM execution_log e "
+                "  WHERE e.signal_id = a.signal_id "
+                "  AND e.state = 'filled' "
+                "  AND e.transport IN ('file', 'metaapi')) "
+                "GROUP BY symbol"
+            )
+            return {row["symbol"]: int(row["c"]) for row in cur.fetchall()}
 
     def list_executions(
         self,

@@ -79,6 +79,44 @@ class FtmoGuard:
         self._max_daily_pnl = max_daily_pnl
         self._max_trades = max_trades_per_day
         self._max_open = max_open_positions
+        self.enabled = True
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any] | None) -> "FtmoGuard":
+        """Build a guard from a parsed config.yaml dict.
+
+        Uses ``config["risk"]["per_trade_pct"]`` and
+        ``config["risk"]["daily_loss_limit_r"]`` to derive the daily loss
+        threshold (e.g. -0.0055 * 2 = -0.011). Reads
+        ``config["risk"]["max_trades_per_day"]`` and
+        ``config["risk"]["max_open_positions"]`` for trade-count and
+        open-position limits. ``config["ftmo"]["max_daily_loss"]`` is
+        referenced for documentation but not used to override the derived
+        limit (FTMO challenge rules are external; the bot's internal stop
+        is the -2R derived value).
+
+        If ``config`` is None, returns a disabled guard (no-op) so
+        existing tests / dev environments without config.yaml keep working.
+        """
+        if not config or not isinstance(config.get("risk"), dict):
+            # No config or no risk section → guard is disabled (no-op).
+            # The trader's config.yaml must have a populated ``risk:`` block
+            # before the guard enforces any limit.
+            instance = cls()
+            instance.enabled = False
+            return instance
+        risk = config["risk"]
+        per_trade_pct = float(risk.get("per_trade_pct", 0.0055))
+        daily_loss_limit_r = float(risk.get("daily_loss_limit_r", 2.0))
+        # Daily loss in account-fraction = -(per_trade_pct × daily_loss_limit_r).
+        max_daily_pnl = -abs(per_trade_pct * daily_loss_limit_r)
+        max_trades_per_day = int(risk.get("max_trades_per_day", 3))
+        max_open_positions = int(risk.get("max_open_positions", 1))
+        return cls(
+            max_daily_pnl=max_daily_pnl,
+            max_trades_per_day=max_trades_per_day,
+            max_open_positions=max_open_positions,
+        )
 
     def check(self, state: GuardState, symbol: str) -> FtmoGuardResult:
         """Run all 3 checks. First failure short-circuits.
@@ -120,17 +158,41 @@ class FtmoGuard:
         return FtmoGuardResult(allowed=True)
 
 
-def build_guard_state_from_db(db: Any, symbol: str, today_start: str | None = None) -> GuardState:
-    """Compute a ``GuardState`` from the bot DB (``execution_log`` rows).
+def build_guard_state_from_db(
+    db: Any,
+    symbol: str,
+    today_start: str | None = None,
+) -> GuardState:
+    """Compute a ``GuardState`` from the bot DB.
 
-    Implements the plan §FTMO guard integration:
-      - trades_today: count of execution_log rows where transport='file'
-        and transport_state IN ('acked', 'sent')
-      - daily_pnl: sum of MT5-reported pnl (column may be NULL for pending;
-        treat as 0)
-      - open_positions: count of distinct symbols with state='sent' or 'acked'
+    Real implementation (Phase 02 audit fix): reads the
+    ``execution_log`` table via the BotDB aggregation methods
+    ``get_daily_pnl``, ``get_trades_today``, and ``get_open_positions``.
+
+    Parameters
+    ----------
+    today_start:
+        UTC ISO-8601 timestamp marking the start of the trading day.
+        If None, uses midnight UTC today — caller should pass the NY
+        session open timestamp for proper session alignment.
     """
-    # Implementation deferred: needs execution_log + MT5 PnL columns.
-    # Return a permissive default-state for now (Phase 06 wires this in once
-    # execution_log is populated). Real values come from EA ACKs.
-    return GuardState(daily_pnl=0.0, trades_today=0, open_positions={})
+    if today_start is None:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    try:
+        daily_pnl = float(db.get_daily_pnl(today_start))
+        trades_today = int(db.get_trades_today(today_start))
+        open_positions = dict(db.get_open_positions())
+    except AttributeError as exc:
+        # db missing one of the aggregation methods → fail loud.
+        raise RuntimeError(
+            f"BotDB missing aggregation method: {exc}. "
+            "Phase 02 audit fix requires get_daily_pnl/get_trades_today/"
+            "get_open_positions on BotDB."
+        ) from exc
+    return GuardState(
+        daily_pnl=daily_pnl,
+        trades_today=trades_today,
+        open_positions=open_positions,
+    )
