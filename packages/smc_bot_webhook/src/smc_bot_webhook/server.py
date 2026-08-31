@@ -364,10 +364,33 @@ async def _execute_via_executor(
         )
         return {"transport": "disabled", "state": "queued", "message": "transport not configured"}
 
-    # Phase 06: FTMO guard snapshot (real DB-backed in Phase 06.5).
-    # For now, permissive default; trader may override via env later.
-    guard_state = GuardState(daily_pnl=0.0, trades_today=0, open_positions={})
-    guard_check = ftmo_guard.check(guard_state, payload.symbol) if ftmo_guard else None
+    # Phase 02 (audit fix): FTMO guard snapshot is real DB-backed.
+    # Reads execution_log via BotDB aggregations. compute NY session start
+    # for proper session alignment (NY open is 17:00 local).
+    from smc_bot_webhook.gates.state import ny_session_date
+    from smc_bot_webhook.mt5_bridge.ftmo_guard import build_guard_state_from_db
+    from datetime import datetime as _ny_dt, timezone as _ny_tz, timedelta as _ny_td
+    # NY session start is 17:00 local; compute its UTC equivalent for
+    # SQLite created_at comparison.
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        _ny = _ny_dt.now(_ZI("America/New_York")).replace(
+            hour=17, minute=0, second=0, microsecond=0,
+        )
+        if _ny_dt.now(_ZI("America/New_York")) < _ny:
+            _ny = _ny - _ny_td(days=1)
+        _today_start = _ny.astimezone(_ny_tz.utc).isoformat()
+    except Exception:
+        # zoneinfo missing on Windows < 3.9 — fall back to UTC midnight.
+        _now = _ny_dt.now(_ny_tz.utc)
+        _today_start = _now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    guard_state = build_guard_state_from_db(
+        db, payload.symbol, today_start=_today_start,
+    )
+    if ftmo_guard is not None and getattr(ftmo_guard, "enabled", True):
+        guard_check = ftmo_guard.check(guard_state, payload.symbol)
+    else:
+        guard_check = None
     if guard_check is not None and not guard_check.allowed:
         db.upsert_execution(
             signal_id=signal_id, transport="file", state="rejected",
@@ -598,8 +621,25 @@ def create_app(
     if executor is None:
         executor = build_executor(db=db)
     if ftmo_guard is None:
-        ftmo_guard = FtmoGuard()
-    if gate_store is None:
+        # Phase 02 (audit fix): build FTMO guard from config.yaml so the
+        # daily loss / trade count / open position limits reflect the
+        # trader's real risk settings. Falls back to a disabled guard
+        # when no config file is found.
+        try:
+            import yaml
+            from pathlib import Path as _Path
+            _config_path = _Path(os.environ.get("SMC_CONFIG_PATH", "config.yaml"))
+            if _config_path.exists():
+                with _config_path.open(encoding="utf-8") as _f:
+                    _config = yaml.safe_load(_f) or {}
+                ftmo_guard = FtmoGuard.from_config(_config)
+            else:
+                ftmo_guard = FtmoGuard()
+                ftmo_guard.enabled = False
+        except Exception as exc:
+            logger.warning("FTMO guard config load failed: %s; using defaults", exc)
+            ftmo_guard = FtmoGuard()
+            ftmo_guard.enabled = False
         gate_store = GateStateStore(active_db)
     if validator is None:
         validator = Validator(

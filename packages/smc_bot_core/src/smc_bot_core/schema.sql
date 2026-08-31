@@ -62,14 +62,15 @@ CREATE TABLE IF NOT EXISTS execution_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     signal_id      TEXT NOT NULL,
     transport      TEXT NOT NULL,  -- 'file'|'metaapi'|'disabled'
-    state          TEXT NOT NULL,  -- 'queued'|'sent'|'acked'|'failed'|'rejected'
+    state          TEXT NOT NULL,  -- 'queued'|'sent'|'acked'|'filled'|'closed'|'failed'|'rejected'
     payload        TEXT,
     mt5_ticket     TEXT,
     fill_price     REAL,
+    pnl            REAL,            -- realized P&L as fraction of account (e.g. -0.011 = -1.1%); set on 'filled' or 'closed'
     error          TEXT,
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL,
     UNIQUE(signal_id, transport)
 );
 
-CREATE INDEX IF NOT EXISTS idx_execution_log_state ON execution_log(state, created_at);
+-- Idempotent column add for older DBs is performed in init_db() in
