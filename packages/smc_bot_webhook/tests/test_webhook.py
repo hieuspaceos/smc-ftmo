@@ -117,7 +117,7 @@ class TestValidation:
     def test_rejects_oversized_body(self) -> None:
         client, _db, db_path = _client()
         try:
-            huge = "X" * 5000  # > 4 KB cap
+            huge = "X" * 10000  # > 8 KB cap (Phase 04: bumped from 4 KB)
             resp = client.post(
                 URL,
                 content=huge,

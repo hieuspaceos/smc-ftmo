@@ -21,8 +21,7 @@ TRADINGVIEW_IPV4_ALLOWLIST: tuple[str, ...] = (
 )
 
 DEFAULT_RATE_LIMIT_PER_MIN = 60
-DEFAULT_BODY_MAX_BYTES = 4096  # 4 KB cap per phase-01 spec
-
+DEFAULT_BODY_MAX_BYTES = 8192  # 8 KB cap (Phase 04: bumped from 4 KB for richer payloads)
 
 @dataclass(frozen=True)
 class SecurityConfig:
