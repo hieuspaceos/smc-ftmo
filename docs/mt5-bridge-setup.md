@@ -136,7 +136,7 @@ Verify via dashboard:
 | `processed list` blocks valid signals | EA crashed mid-OrderSend → dedupe file persists | Delete `C:\Users\<you>\...\MQL5\Files\SMC_processed.csv` (will re-process all) |
 | `OrderSend failed: retcode=10004 (Requote)` | Normal market volatility | EA logs and writes to `failed/`; bot records failure; trader retries |
 | Telegram confirmation not received | Telegram bot not configured | Phase 02: set `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` |
-| Outbox `pending/` files appear then disappear too fast | EA deletes them on move to `done/` — normal | Verify `done/` and `failed/` have the ACK |
+| /telegram/callback returns 401 | `TELEGRAM_CALLBACK_SECRET` not set or mismatch | Set env var + `setWebhook(secret_token=...)` to the same value (Phase 01+) |
 | Dashboard `/api/execution` empty | `execution_log` not populated yet | Check MQL5 EA logs; ensure folder write permissions |
 
 ## 5. Safety guards (Phase 06)

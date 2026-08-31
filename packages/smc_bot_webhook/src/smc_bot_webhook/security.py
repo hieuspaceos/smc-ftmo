@@ -39,6 +39,17 @@ def check_url_secret(provided: str | None, expected: str) -> bool:
     return hmac.compare_digest(provided, expected)
 
 
+def check_telegram_secret(provided: str | None, expected: str | None) -> bool:
+    """Constant-time compare Telegram callback secret header.
+
+    Empty provided → False. Empty expected (server not configured) → False:
+    the server refuses to accept any Telegram callback when no secret is set,
+    so misconfiguration fails closed rather than open.
+    """
+    if not provided or not expected:
+        return False
+    return hmac.compare_digest(provided, expected)
+
 def check_ip_allowlist(client_ip: str | None, allowlist: tuple[str, ...] = TRADINGVIEW_IPV4_ALLOWLIST) -> bool:
     """Return True iff client_ip is in allowlist.
 

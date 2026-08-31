@@ -57,6 +57,7 @@ from smc_bot_webhook.security import (
     SecurityConfig,
     body_within_cap,
     check_ip_allowlist,
+    check_telegram_secret,
     check_url_secret,
     extract_client_ip,
 )
@@ -89,6 +90,7 @@ class AppSettings:
     db_path: Path
     security: SecurityConfig
     trusted_proxy: bool
+    telegram_callback_secret: str | None = None
 
     @classmethod
     def from_env(cls) -> "AppSettings":
@@ -101,11 +103,25 @@ class AppSettings:
                 f"Use at least {MIN_SECRET_LENGTH} chars."
             )
         db = Path(_env("SMC_BOT_DB_PATH", str(get_default_db_path())) or str(get_default_db_path()))
+        telegram_secret = _env("TELEGRAM_CALLBACK_SECRET", "") or ""
+        bot_token = _env("TELEGRAM_BOT_TOKEN", "") or ""
+        if bot_token and not telegram_secret:
+            raise RuntimeError(
+                "TELEGRAM_CALLBACK_SECRET is required when TELEGRAM_BOT_TOKEN is set. "
+                "Set TELEGRAM_CALLBACK_SECRET to the same value configured in your "
+                "Telegram bot webhook (X-Telegram-Bot-Api-Secret-Token header)."
+            )
+        if telegram_secret and len(telegram_secret) < MIN_SECRET_LENGTH:
+            raise RuntimeError(
+                f"TELEGRAM_CALLBACK_SECRET is too short ({len(telegram_secret)} chars). "
+                f"Use at least {MIN_SECRET_LENGTH} chars."
+            )
         return cls(
             url_secret=secret,
             db_path=db,
             security=SecurityConfig(url_secret=secret),
             trusted_proxy=_env("SMC_TRUSTED_PROXY", "0") == "1",
+            telegram_callback_secret=telegram_secret or None,
         )
 
 
@@ -669,6 +685,36 @@ def create_app(
             )
         request.state.client_ip = client_ip
 
+    async def _verify_telegram_source(request: Request) -> None:
+        """Verify Telegram callback secret header.
+
+        Telegram bot API can be configured with a secret token in
+        ``setWebhook(secret_token=...)``; subsequent callback updates carry
+        that token in the ``X-Telegram-Bot-Api-Secret-Token`` header.
+        We require the header to match ``TELEGRAM_CALLBACK_SECRET``. When
+        no secret is configured, all Telegram callback traffic is
+        rejected (fail-closed) so a misconfigured bot cannot accept
+        spoofed callbacks.
+        """
+        if not settings.telegram_callback_secret:
+            log_throttle.log(
+                logging.WARNING, "tg:no_secret_configured",
+                "rejecting /telegram request: TELEGRAM_CALLBACK_SECRET not set",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="telegram callback secret not configured",
+            )
+        provided = request.headers.get("x-telegram-bot-api-secret-token")
+        if not check_telegram_secret(provided, settings.telegram_callback_secret):
+            log_throttle.log(
+                logging.WARNING, "tg:bad_secret",
+                "rejecting /telegram request: bad or missing secret",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="bad or missing telegram secret",
+            )
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
         return {
@@ -743,7 +789,7 @@ def create_app(
     @app.post("/telegram/callback")
     async def telegram_callback(
         request: Request,
-        _: None = Depends(_verify_source),
+        _: None = Depends(_verify_telegram_source),
     ) -> JSONResponse:
         return await _handle_telegram_callback(
             request, active_db, dispatcher, validator, gate_store,
@@ -753,7 +799,7 @@ def create_app(
     @app.post("/telegram/command")
     async def telegram_command(
         request: Request,
-        _: None = Depends(_verify_source),
+        _: None = Depends(_verify_telegram_source),
     ) -> JSONResponse:
         return await _handle_telegram_command(request, active_db, dispatcher, gate_store)
 

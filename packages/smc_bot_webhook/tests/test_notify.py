@@ -497,7 +497,7 @@ class TestAuditHooks:
     def _cleanup(self, p) -> None:
         try:
             p.unlink()
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError):
             pass
 
     def test_record_decision_accept_writes_accept_row(self) -> None:
