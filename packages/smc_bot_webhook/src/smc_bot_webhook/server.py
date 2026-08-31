@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import asyncio
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -164,10 +165,80 @@ class _ThrottledLogger:
             self._last[key] = now
         logger.log(level, msg, *args)
 
+# ---------------------------------------------------------------------------
+# Per-signal_id lock + edit-with-retry helpers (Phase 03)
+# ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Background dispatch helpers (Phase 03)
-# ---------------------------------------------------------------------------
+# Module-level lock registry keyed by signal_id. The create_app() factory
+# wires app.state.signal_locks to its own instance to keep test runs
+# isolated, but module-level access still works for legacy callers.
+_signal_locks: dict[str, asyncio.Lock] = {}
+_signal_locks_lock = threading.Lock()
+_SIGNAL_LOCKS_LRU_CAP = 1024
+
+
+def _signal_lock_for(signal_id: str) -> asyncio.Lock:
+    """Return (or create) the per-signal_id asyncio.Lock.
+
+    Uses an LRU cap to prevent unbounded growth when many distinct
+    signal_ids pass through the bot in a short window. When the cap is
+    exceeded, the oldest entry (by insertion order in the dict) is
+    evicted. The lock is never held across calls (each callback is
+    short-lived), so eviction while a coroutine waits on a lock is
+    not a concern for correctness — the waiter simply waits on the
+    new lock object (but since the old key no longer maps to it, the
+    lock would be released by the time it's looked up; in practice
+    eviction only happens under sustained unique-signal-id load).
+    """
+    with _signal_locks_lock:
+        lock = _signal_locks.get(signal_id)
+        if lock is None:
+            if len(_signal_locks) >= _SIGNAL_LOCKS_LRU_CAP:
+                # Pop oldest (FIFO) — Python 3.7+ dicts preserve insertion order.
+                _signal_locks.pop(next(iter(_signal_locks)), None)
+            lock = asyncio.Lock()
+            _signal_locks[signal_id] = lock
+        return lock
+
+
+async def _edit_with_retry(
+    dispatcher: Any,
+    message_id: int,
+    payload: Any,
+    *,
+    decision: str,
+    actor: str,
+    max_retries: int = 1,
+    backoff_seconds: float = 1.0,
+) -> bool:
+    """Edit a Telegram message with one retry on transient failure.
+
+    The original ``dispatcher.edit_signal`` only logs failures and
+    returns False; if the edit fails, the trader can double-click
+    Accept on the stale message and trigger a second execution. This
+    helper adds a single retry with a short backoff (1s default) before
+    giving up. If both attempts fail, records an ``edit_failed`` event
+    for the audit trail.
+    """
+    for attempt in range(max_retries + 1):
+        ok = await dispatcher.edit_signal(
+            message_id, payload, decision=decision, actor=actor,
+        )
+        if ok:
+            return True
+        if attempt + 1 < max_retries + 1:
+            await asyncio.sleep(backoff_seconds)
+    # Both attempts failed — record audit event.
+    record_edit_failure = getattr(dispatcher, "record_edit_failure", None)
+    if callable(record_edit_failure):
+        try:
+            record_edit_failure(
+                None, payload.signal_id,  # db=None acceptable; we only
+                actor=actor, exc=RuntimeError("edit_signal retry exhausted"),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return False
 
 
 async def _safe_record(db: BotDB, signal_id: str, event_type: str, **kwargs: Any) -> None:
@@ -488,26 +559,59 @@ async def _accept_signal(
             status_code=status.HTTP_409_CONFLICT,
         )
 
-    # Pass: mark accepted, edit Telegram message, clear signal-specific gates.
-    dispatcher.record_decision(
-        db, signal_id,
-        decision="accept", actor=decision.actor, nonce=parsed.nonce,
-    )
-    msg_id = dispatcher.get_message_id(signal_id)
-    if msg_id is not None:
-        await dispatcher.edit_signal(msg_id, payload, decision="accept", actor=decision.actor)
-    gate_store.clear_signal_specific()
-    # Phase 06: hand off to MT5 executor (disabled by default; transport='file' writes JSON)
-    exec_result = await _execute_via_executor(
-        db=db, payload=payload, signal_id=signal_id, actor=decision.actor,
-        executor=executor, ftmo_guard=ftmo_guard,
-    )
-    return JSONResponse({
-        "decision": "accepted",
-        "signal_id": signal_id,
-        "actor": decision.actor,
-        "execution": exec_result,
-    })
+    # Phase 03 (audit fix): serialize concurrent Accept callbacks per
+    # signal_id to prevent double-execute on Telegram double-click.
+    signal_lock = _signal_lock_for(signal_id)
+    async with signal_lock:
+        # Re-validate inside the lock — state may have changed between
+        # the outer validate and the lock acquire.
+        outcome = validator.validate(payload)
+        if outcome.decision is not Decision.ACCEPTED_READY:
+            reasons = "; ".join(outcome.blocking_reasons())
+            msg_id = dispatcher.get_message_id(signal_id)
+            if msg_id is not None:
+                await _edit_with_retry(
+                    dispatcher, msg_id, payload, decision="reject", actor=decision.actor,
+                )
+            dispatcher.record_decision(
+                db, signal_id,
+                decision="reject", actor=decision.actor, nonce=parsed.nonce,
+            )
+            return JSONResponse(
+                {"decision": "refused", "reason": reasons, "validator_decision": outcome.decision.value},
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        # Pass: mark accepted, edit Telegram message, then hand off to
+        # the executor. The signal-specific gates are cleared only AFTER
+        # the executor accepts the signal — if the executor fails the
+        # gates stay intact and the trader can retry without re-acking.
+        dispatcher.record_decision(
+            db, signal_id,
+            decision="accept", actor=decision.actor, nonce=parsed.nonce,
+        )
+        msg_id = dispatcher.get_message_id(signal_id)
+        if msg_id is not None:
+            await _edit_with_retry(
+                dispatcher, msg_id, payload, decision="accept", actor=decision.actor,
+            )
+        exec_result = await _execute_via_executor(
+            db=db, payload=payload, signal_id=signal_id, actor=decision.actor,
+            executor=executor, ftmo_guard=ftmo_guard,
+        )
+        # Phase 03 (audit fix): only clear signal-specific gates on
+        # successful executor handoff. ``ok`` = executor accepted
+        # (queued / file written). A guard-rejected or failed executor
+        # path leaves the gates intact so the trader can retry.
+        exec_state = exec_result.get("state") if isinstance(exec_result, dict) else ""
+        if exec_state in ("queued", "filled", "closed", "sent", "acked"):
+            gate_store.clear_signal_specific()
+        return JSONResponse({
+            "decision": "accepted",
+            "signal_id": signal_id,
+            "actor": decision.actor,
+            "execution": exec_result,
+        })
 
 
 async def _reject_signal(
@@ -545,8 +649,9 @@ async def _reject_signal(
                 raw_payload=alert["raw_payload"],
                 signal_id=alert["signal_id"],
             )
-            await dispatcher.edit_signal(msg_id, payload, decision="reject", actor=decision.actor)
-    return JSONResponse({"decision": "rejected", "signal_id": signal_id, "actor": decision.actor})
+            await _edit_with_retry(
+                dispatcher, msg_id, payload, decision="reject", actor=decision.actor,
+            )
 
 
 async def _handle_telegram_command(
