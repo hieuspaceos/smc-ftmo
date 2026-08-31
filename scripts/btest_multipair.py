@@ -168,11 +168,11 @@ def main() -> int:
     parser.add_argument(
         "--pair", choices=["EURUSD", "XAUUSD", "GBPUSD", "USDCHF", "BTCUSD", "ALL"],
         default="ALL",
-        help="Pair to backtest (default: ALL — runs EURUSD, XAUUSD, GBPUSD, USDCHF)",
+        help="Pair to backtest (default: ALL — runs EURUSD, XAUUSD, GBPUSD, USDCHF, BTCUSD)",
     )
     args = parser.parse_args()
 
-    pairs = ["EURUSD", "XAUUSD", "GBPUSD", "USDCHF"] if args.pair == "ALL" else [args.pair]
+    pairs = ["EURUSD", "XAUUSD", "GBPUSD", "USDCHF", "BTCUSD"] if args.pair == "ALL" else [args.pair]
 
     print(f"Running backtest for: {', '.join(pairs)}")
     print(f"Window: {DEFAULT_CFG['start_date']} → {DEFAULT_CFG['end_date']}")
