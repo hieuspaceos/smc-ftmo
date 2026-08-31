@@ -450,6 +450,12 @@ class TelegramDispatcher:
             return None
         if any(c not in "0123456789abcdef" for c in signal_id.lower()):
             return None
+        # Phase 05 (audit fix): length must be exactly 16 hex chars
+        # (matches compute_signal_id output length). Empty or wrong-
+        # length ids previously passed the hex check, leading to
+        # gate_ack rows with garbage signal_id.
+        if len(signal_id) != 16:
+            return None
         return gate_name, signal_id.lower()
 
     # ------------------------------------------------------------------
