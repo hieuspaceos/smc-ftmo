@@ -35,6 +35,43 @@ logger = logging.getLogger("bot.mt5_bridge")
 DEFAULT_OUTBOX_DIR = Path("output/mt5_outbox")
 
 
+def _validate_outbox_dir(path: Path) -> Path:
+    """Validate MT5_OUTBOX_DIR is safe to use.
+
+    Phase 06 (audit fix H1): reject paths that:
+    - are symlinks (potential symlink-attack redirect)
+    - point to a regular file (not a directory)
+    - are not writable by the current process
+
+    Returns the resolved (real) path. Raises ``ValueError`` with a
+    clear message on any failure so the trader can fix the env var.
+    """
+    if path.is_symlink():
+        raise ValueError(
+            f"MT5_OUTBOX_DIR is a symlink: {path!s}. Refusing to write "
+            "to symlinked directories for security (symlink-attack risk)."
+        )
+    if path.exists() and not path.is_dir():
+        raise ValueError(
+            f"MT5_OUTBOX_DIR exists but is not a directory: {path!s}"
+        )
+    # Try to create the directory; this also surfaces permission
+    # errors early. resolve(strict=False) so the path doesn't need
+    # to exist yet.
+    resolved = path.resolve()
+    if not resolved.exists():
+        try:
+            resolved.mkdir(parents=True, exist_ok=True)
+        except (OSError, PermissionError) as exc:
+            raise ValueError(
+                f"MT5_OUTBOX_DIR cannot be created: {path!s} ({exc})"
+            ) from exc
+    if not os.access(resolved, os.W_OK):
+        raise ValueError(
+            f"MT5_OUTBOX_DIR is not writable: {resolved!s}"
+        )
+    return resolved
+
 class Executor(Protocol):
     """Minimal contract every executor backend implements."""
 
@@ -103,7 +140,10 @@ def build_executor(
         return DisabledExecutor()
     if transport == "file":
         out_dir = outbox_dir or Path(os.environ.get("MT5_OUTBOX_DIR", str(DEFAULT_OUTBOX_DIR)))
-        return FileBridgeExecutor(OutboxWriter(out_dir))
+        # Phase 06 (audit fix H1): validate path is real directory, not
+        # a symlink, and is writable. Raises ValueError on misconfig.
+        validated = _validate_outbox_dir(out_dir)
+        return FileBridgeExecutor(OutboxWriter(validated))
     if transport == "metaapi":
         raise NotImplementedError(
             "MetaAPI executor is a future stub; not implemented in Phase 06. "

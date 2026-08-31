@@ -132,8 +132,20 @@ class AppSettings:
 
 
 class _RateLimiter:
-    def __init__(self, per_minute: int) -> None:
+    # Phase 06 (audit fix H3): bound the number of unique keys to
+    # prevent memory growth from attacker-controlled IPs. Default
+    # 10000 covers a full day of unique-IPv4 traffic.
+    DEFAULT_MAX_BUCKETS = 10000
+
+    def __init__(
+        self,
+        per_minute: int,
+        max_buckets: int = DEFAULT_MAX_BUCKETS,
+    ) -> None:
+        if max_buckets <= 0:
+            raise ValueError(f"max_buckets must be > 0, got {max_buckets}")
         self._per_minute = per_minute
+        self._max_buckets = max_buckets
         self._lock = threading.Lock()
         self._buckets: dict[str, deque[float]] = {}
 
@@ -141,11 +153,19 @@ class _RateLimiter:
         ts = now if now is not None else int(time.time())
         window_start = ts - 60
         with self._lock:
+            # Phase 06: bound memory. If the bucket is full, evict the
+            # oldest entry (FIFO by dict insertion order). This loses
+            # rate-limit state for one attacker IP but keeps the dict
+            # size bounded under sustained unique-IP load.
+            if key not in self._buckets and len(self._buckets) >= self._max_buckets:
+                self._buckets.pop(next(iter(self._buckets)), None)
             bucket = self._buckets.setdefault(key, deque())
             while bucket and bucket[0] < window_start:
                 bucket.popleft()
             if len(bucket) >= self._per_minute:
                 return False
+            bucket.append(ts)
+            return True
             bucket.append(ts)
             return True
 
@@ -885,7 +905,7 @@ def create_app(
             "version": "0.3.0",
             "telegram": bool(getattr(dispatcher, "enabled", False)),
             "discord": bool(getattr(mirror, "enabled", False)),
-            "admin_override": validator._admin_override,  # type: ignore[attr-defined]
+            "admin_override": validator.admin_override,  # Phase 06: public property
         }
 
     @app.post("/webhooks/tradingview")
