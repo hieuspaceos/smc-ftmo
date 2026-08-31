@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: smc_engine
-Version: 0.3.0
-Summary: Smart Money Concepts engine — swing/structure/OB/FVG/liquidity/causal pipeline
-Requires-Python: >=3.11
-Requires-Dist: pandas>=2.0
-Requires-Dist: numpy>=1.24
