@@ -7,25 +7,17 @@ in backtest PnL because backtester uses `pnl = r_final * risk_amount`
 (R-multiple framework), not `pnl = r_final * lot * sl * pip_value`. So
 a 10,000× wrong lot did not show in PnL output.
 
-But the `lot` field in the returned trade dict was missing entirely
-(see below) — and would have broken live MT5 deployment (broker would
-reject oversized lots or trigger margin call).
+Then root cause #2 was fixed (commits subsequent to 9e66381): `lot` field
+is now included in the trade dict, AND original_sl is preserved (not
+overwritten by move_sl). This unlocks the invariant test below.
 
-Findings during investigation:
-1. `trade dict` (constructed at src/backtester.py:607-630 and :709-733)
-   does NOT include `lot` field. Always None when read.
-2. The trade dict's `sl` field is overwritten to entry after TP1 hit
-   (move_sl action). Recorded `sl` doesn't reflect actual stop used.
-   PnL unaffected because `sl_distance` was cached at init time.
-3. R-multiple is computed from cached `sl_distance`, not from trade
-   dict's `sl` field.
-
-This test pins what invariants we CAN verify externally: trade dict fields
-   that the backtester actually populates, and `r_multiple` math
-   correctness on the cached sl_distance.
-
-Tests for the `lot` invariant are at the calculate_lot() level (see
-tests/test_position_sizing_units.py::test_bug_regression_real_dollar_risk_within_target).
+Tests verify externally-visible invariants:
+1. risk_usd == account * risk_per_trade for every trade
+2. r_multiple finite and within sane range (-100 to 100)
+3. pnl_usd == r_multiple * risk_usd (formula invariant)
+4. lot field present in trade dict AND lot × sl × pip_value == risk_usd
+   (the key invariant the calculate_lot() bug would have broken)
+5. original_sl preserved across TP1 hit (move_sl does not corrupt journal)
 """
 from __future__ import annotations
 
@@ -38,6 +30,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from backtester import run_backtest
+from strategy import pip_size_for_pair
 
 
 @pytest.fixture
@@ -98,38 +91,22 @@ def test_risk_amount_matches_config_intent(minimal_config):
         )
 
 
-def test_r_multiple_uses_cached_sl_distance_not_trade_dict_sl(minimal_config):
-    """Verify r_multiple is computed from CACHED sl_distance, not from
-    trade dict's `sl` field (which gets overwritten to entry after TP1 hit).
+def test_r_multiple_uses_cached_sl_distance(minimal_config):
+    """r_multiple is finite and within sane range.
 
-    For each trade:
-      r_multiple ≈ (exit_price - entry) / |original_sl - entry|
-    where original_sl differs from trade dict's sl once TP1 was hit.
-
-    We can't directly verify original_sl from trade dict, but we CAN check:
-    - exit_reason == 'sl' → r_multiple == -1 (if no partial close)
-    - exit_reason == 'tp3' → r_multiple ≥ target_r (TP ladder hit)
-    - exit_reason == 'time' → r_multiple finite
+    Ladder: SL exits can have r > -1 if TP1 hit then SL hit (BE+).
+    Scale_in: SL exits should be r ≤ 0 (full position not yet at TP).
     """
     trades, _ = run_backtest("EURUSD", minimal_config)
     if not trades:
         pytest.skip("No trades produced in test window")
-    # For ladder mode: SL exits can have r > -1 if a partial close was
-    # already taken at TP1 (BE rule moves sl to entry, so further adverse
-    # move hits BE not -1R). So just check r is finite and reasonable.
-    # For scale_in mode: SL exits should be r ≈ -1 (no partial credit yet).
+
     for i, t in enumerate(trades):
         r = t.get("r_multiple")
         reason = t.get("exit_reason")
-        # r must be finite (no division by zero artifacts)
         assert math.isfinite(r), f"Trade {i}: r_multiple={r} is not finite"
 
-        # On a 'sl' exit, cached sl_distance should still produce a sane r.
-        # For ladder: r can be > -1 if TP1 hit then SL hit (BE+).
-        # For scale_in: r should be ≤ 0 (full position not yet at TP).
         if reason == "sl":
-            # Cached sl_distance must NOT be zero (would give inf r).
-            # We check indirectly: r must be within ±100 (sanity range).
             assert -100 <= r <= 100, (
                 f"Trade {i}: exit=sl but r={r:.3f} wildly out of range; "
                 f"suggests cached sl_distance is wrong."
@@ -151,33 +128,88 @@ def test_pnl_uses_r_multiple_times_risk_amount(minimal_config):
         risk = t.get("risk_usd")
         pnl = t.get("pnl_usd")
         expected_pnl = r * risk
-        # Allow small rounding error (trades may have partial closes
-        # where pnl != r * risk exactly)
         assert math.isclose(pnl, expected_pnl, abs_tol=0.01), (
             f"Trade {i}: pnl_usd={pnl}, expected r*risk={expected_pnl} "
             f"(r={r}, risk={risk})"
         )
 
 
-def test_trade_dict_does_not_include_lot_field(minimal_config):
-    """Document the current state: trade dict's `lot` field is missing.
+def test_lot_field_present_and_satisfies_invariant(minimal_config):
+    """The key invariant: lot × sl × pip_value == risk_usd.
 
-    This test pins the gap — if someone adds `lot` to the trade dict
-    in the future, this test should be updated to verify the invariant.
-    Currently asserts the BUG to make regression obvious.
+    Catches:
+    - calculate_lot() unit-conversion bug (lot 10000x off)
+    - pip_size_for_pair() returning wrong value
+    - risk_amount being computed from lot instead of as fixed dollar amount
+
+    Pre-fix (before commit adding lot to trade dict), this test was not
+    possible — lot was never serialized. Now it pins the contract.
     """
     trades, _ = run_backtest("EURUSD", minimal_config)
     if not trades:
         pytest.skip("No trades produced in test window")
 
-    # All trades should have lot field as None (currently missing)
-    for i, t in enumerate(trades[:5]):
+    pip_value = 10.0  # EURUSD
+
+    for i, t in enumerate(trades):
         lot = t.get("lot")
-        assert lot is None, (
-            f"Trade {i}: lot={lot}. If non-None, the lot field has been "
-            f"added to trade dict — UPDATE THIS TEST to verify "
-            f"lot × sl × pip_value == risk_usd invariant."
+        # Lot must be present (was missing before this commit)
+        assert lot is not None, (
+            f"Trade {i}: lot field missing from trade dict"
         )
+        # Lot must be broker-executable
+        assert 0.01 <= lot <= 100.0, (
+            f"Trade {i}: lot={lot} outside broker range [0.01, 100]"
+        )
+
+        # Compute invariant using ORIGINAL sl (not post-TP1 sl)
+        original_sl = t.get("original_sl") or t.get("sl")
+        entry = t.get("entry")
+        sl_distance_pips = abs(entry - original_sl) / pip_size_for_pair("EURUSD")
+        actual_dollar_risk = lot * sl_distance_pips * pip_value
+        risk_usd = t.get("risk_usd")
+
+        # Allow $1 rounding (lot rounded to 0.01)
+        assert math.isclose(actual_dollar_risk, risk_usd, abs_tol=1.0), (
+            f"Trade {i}: lot={lot} × sl_pips={sl_distance_pips:.1f} × "
+            f"pip_value={pip_value} = ${actual_dollar_risk:.2f}, "
+            f"expected ${risk_usd:.2f} (rounded to $1)"
+        )
+
+
+def test_original_sl_preserved_when_tp1_hit(minimal_config):
+    """For trades that hit TP1 (move_sl action), original_sl should
+    differ from sl_after_tp1 (which becomes entry = BE level).
+
+    Trade dict's `sl` should reflect ORIGINAL sl, not post-BE sl.
+    """
+    trades, _ = run_backtest("EURUSD", minimal_config)
+    if not trades:
+        pytest.skip("No trades produced in test window")
+
+    tp1_hit_count = 0
+    for i, t in enumerate(trades):
+        sl_after_tp1 = t.get("sl_after_tp1")
+        if sl_after_tp1 is None:
+            # TP1 not hit on this trade — move_sl action never fired
+            continue
+        tp1_hit_count += 1
+        sl = t.get("sl")
+        entry = t.get("entry")
+        # Original sl should differ from post-TP1 sl (which is entry)
+        assert sl is not None
+        assert not math.isclose(sl, entry, abs_tol=1e-6), (
+            f"Trade {i}: sl field equals entry {entry} — original_sl was "
+            f"not preserved (likely overwritten by move_sl action)"
+        )
+        # post-TP1 sl should be at or near entry (BE rule)
+        assert math.isclose(sl_after_tp1, entry, abs_tol=1e-6), (
+            f"Trade {i}: sl_after_tp1={sl_after_tp1} != entry={entry}; "
+            f"BE rule expected post-TP1 sl = entry"
+        )
+
+    # Sanity: at least some trades should hit TP1 in a 6-month window
+    # (don't assert a minimum to avoid brittleness)
 
 
 if __name__ == "__main__":

@@ -568,6 +568,12 @@ def run_backtest(
                     # scale_in mode: ScaleInExit tracks realized_r internally;
                     # equity is updated only on full close via the 'closed' branch below.
                 elif tag == "move_sl":
+                    # Preserve the original sl for journal accuracy — the BE rule
+                    # overwrites it to entry, but downstream consumers (trade journal,
+                    # journal.py stats_by_setup) need to know what SL the trade was
+                    # actually opened with.
+                    if "original_sl" not in open_pos:
+                        open_pos["original_sl"] = float(open_pos["sl"])
                     open_pos["sl"] = float(action[1])
                 elif tag == "open_leg2":
                     # Scale-in: register leg2 with given lot/sl/tp; no equity change.
@@ -608,7 +614,9 @@ def run_backtest(
                         "side": open_pos["side"],
                         "entry": open_pos["entry"],
                         "exit_price": bar_close,
-                        "sl": open_pos["sl"],
+                        "sl": open_pos.get("original_sl", open_pos["sl"]),
+                        "lot": open_pos.get("lot"),
+                        "sl_after_tp1": open_pos["sl"] if "original_sl" in open_pos else None,
                         "tp1": open_pos["tp1"],
                         "tp2": open_pos["tp2"],
                         "tp3": open_pos["tp3"],
@@ -711,7 +719,9 @@ def run_backtest(
                     "side": open_pos["side"],
                     "entry": open_pos["entry"],
                     "exit_price": last_close,
-                    "sl": open_pos["sl"],
+                    "sl": open_pos.get("original_sl", open_pos["sl"]),
+                    "lot": open_pos.get("lot"),
+                    "sl_after_tp1": open_pos["sl"] if "original_sl" in open_pos else None,
                     "tp1": open_pos["tp1"],
                     "tp2": open_pos["tp2"],
                     "tp3": open_pos["tp3"],
