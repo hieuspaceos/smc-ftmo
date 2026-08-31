@@ -83,7 +83,7 @@ Set `EXECUTOR_TRANSPORT=file` + `MT5_OUTBOX_DIR=/path/to/shared/folder`. See
 PYTHONPATH=src .venv/bin/python -m pytest tests/ packages/ -q
 ```
 
-Latest: **571 tests passing, 0 regressions.**
+Latest: **303 webhook tests passing, 571 total repo tests, 0 regressions.** (Audit hardening 2026-08-31: +88 tests across 6 audit-fix branches.)
 
 ## Phase plan
 

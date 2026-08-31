@@ -16,6 +16,26 @@ refinement phase:
 - Regime V2 and liquidity pools were added as a follow-on refinement.
 - Phase 13 breaker block + OB body toggle remains the next open extension.
 
+## Audit Fixes (2026-08-31)
+
+The bot webhook was hardened against a 24-finding static audit. All 4 Critical,
+6 High, 8 Medium, and 6 Low findings are closed via the 7-phase rollout
+documented at [plans/260831-1036-bot-audit-fixes/plan.md](../plans/260831-1036-bot-audit-fixes/plan.md).
+
+| Phase | Branch | Scope | Tests |
+|---|---|---|---|
+| 01 | `audit-fixes/phase-01-telegram-auth` | Telegram callback auth (C2) | +18 |
+| 02 | `audit-fixes/phase-02-ftmo-guard` | Real FTMO guard impl (C1, H2) | +19 |
+| 03 | `audit-fixes/phase-03-accept-ordering` | Accept ordering + idempotency (C3, M7) | +9 |
+| 04 | `audit-fixes/phase-04-markdownv2` | MarkdownV2 + retry backpressure (C4, H5, M6, M8) | +18 |
+| 05 | `audit-fixes/phase-05-payload` | Payload hardening (H4, H6, M2, M3, M4) | +14 |
+| 06 | `audit-fixes/phase-06-outbox` | Outbox + rate limit + DB lifecycle (H1, H3, L5, L6) | +10 |
+
+Total: 88 new tests, 303 passing, 0 regressions.
+
+**Do not** run live FTMO trades on `master` without first running
+[smoke-test-bot.md](smoke-test-bot.md).
+
 ## Active Workstreams
 
 | Workstream | Status | Notes |
