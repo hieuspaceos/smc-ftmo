@@ -17,17 +17,19 @@ from typing import Dict, List, Optional, Tuple
 
 
 # Pip SIZE (price distance per pip) — distinct from pip_value (USD per pip per lot).
-# EURUSD/XAUUSD standard: 1 pip = 0.0001 for 5-digit brokers, but XAUUSD quote is
-# 0.01 (2 decimals), so 1 "pip" by SMC convention = 0.01. BTCUSD trades in USD, so
-# 1 pip = 1.0.
+# FX pairs on 5-digit brokers (EURUSD, GBPUSD): 1 pip = 0.0001.
+# XAUUSD 2-digit quote: 1 "pip" by SMC convention = 0.01.
+# BTCUSD trades in USD: 1 pip = 1.0.
 PIP_SIZES: Dict[str, float] = {
     "EURUSD": 0.0001,
+    "GBPUSD": 0.0001,
     "XAUUSD": 0.01,
     "BTCUSD": 1.0,
 }
 
 PIP_VALUES: Dict[str, float] = {
     "EURUSD": 10.0,
+    "GBPUSD": 10.0,
     "XAUUSD": 1.0,
     "BTCUSD": 1.0,
 }
