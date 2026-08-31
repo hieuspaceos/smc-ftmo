@@ -14,7 +14,7 @@ displayMode  = input.string("Recent", "Display mode", options=["Recent", "All"],
 
 swingWindow        = input.int(5, "Swing left/right", minval=1, group=groupCore)
 atrPeriod          = input.int(14, "ATR period", minval=1, group=groupCore)
-displacementMult   = input.float(2.5, "Displacement ATR", minval=0.1, step=0.05, group=groupCore)
+displacementMult   = input.float(1.5, "Displacement ATR", minval=0.1, step=0.05, group=groupCore)
 structureBufferAtr = input.float(0.0, "Structure close buffer ATR", minval=0.0, step=0.05, group=groupCore)
 sweepBufferAtr     = input.float(0.05, "Sweep wick buffer ATR", minval=0.0, step=0.01, group=groupCore)
 obLookback         = input.int(20, "OB lookback", minval=1, group=groupCore)
@@ -229,9 +229,11 @@ rangeAtr           = atr > 0 ? candleRange / atr : na
 bodyAtr            = atr > 0 ? bodyRange / atr : na
 bodyRatio          = candleRange > 0 ? bodyRange / candleRange : na
 closeLocation      = candleRange > 0 ? (close - low) / candleRange : na
-// Adaptive threshold: M15 and lower need higher mult (more noise), H1+ keeps lower mult
-float adaptiveDisplacementMult = timeframe.in_seconds() <= 900 ? displacementMult : timeframe.in_seconds() <= 3600 ? displacementMult - 0.5 : displacementMult - 0.75
-expansionQualified = not na(atr) and candleRange > adaptiveDisplacementMult * atr
+// PARITY-LOCK: keep displacement threshold identical to Python smc_engine at all TFs.
+// The Python backtester + parity script use 1.5×ATR flat (no adaptive). Changing this
+// branch would break 100% parity with src/smc_signals.SMCSignals and the
+// export-pine-parity-fixtures reference. See docs/parity-strategy.md (if present).
+float adaptiveDisplacementMult = displacementMult
 expansionDirection = close > open ? 1 : close < open ? -1 : 0
 
 //==============================================================================
