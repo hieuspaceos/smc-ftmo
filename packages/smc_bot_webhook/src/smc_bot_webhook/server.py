@@ -501,6 +501,20 @@ async def _execute_via_executor(
     return {"transport": executor.name, "state": state, "message": msg}
 
 
+def _parse_iso_received_at(raw: str | None) -> datetime:
+    """Parse a stored received_at ISO-8601 string back to a datetime.
+
+    Falls back to ``datetime.now(UTC)`` if the value is missing or
+    unparseable — a defensive default that keeps the audit trail
+    monotonic even on legacy rows.
+    """
+    if not raw:
+        return datetime.now(timezone.utc)
+    try:
+        return datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return datetime.now(timezone.utc)
+
 async def _accept_signal(
     db: BotDB,
     dispatcher: Any,
@@ -538,7 +552,10 @@ async def _accept_signal(
         bos_id=int(alert["bos_id"]),
         state=alert["state"],
         reason=alert["reason"],
-        received_at=datetime.now(timezone.utc),
+        # Phase 05 (audit fix): preserve the original received_at
+        # timestamp from the alert row (audit / FTMO guard depend
+        # on the actual arrival time, not "now").
+        received_at=_parse_iso_received_at(alert.get("received_at")),
         raw_payload=alert["raw_payload"],
         signal_id=alert["signal_id"],
     )
@@ -645,7 +662,7 @@ async def _reject_signal(
                 bar_time=int(alert["bar_time"]),
                 ob_id=int(alert["ob_id"]), bos_id=int(alert["bos_id"]),
                 state=alert["state"], reason=alert["reason"],
-                received_at=datetime.now(timezone.utc),
+                received_at=_parse_iso_received_at(alert.get("received_at")),
                 raw_payload=alert["raw_payload"],
                 signal_id=alert["signal_id"],
             )

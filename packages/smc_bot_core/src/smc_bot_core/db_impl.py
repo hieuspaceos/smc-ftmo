@@ -233,9 +233,12 @@ class BotDB:
         against a runaway caller storing MB-sized strings in SQLite.
         """
         if payload is not None and len(payload.encode("utf-8")) > self.MAX_EVENT_PAYLOAD_BYTES:
+            original_size = len(payload.encode("utf-8"))
             logger.warning(
-                "truncating oversized signal_events payload: signal_id=%s type=%s size=%d",
-                signal_id, event_type, len(payload),
+                "truncating oversized signal_events payload: signal_id=%s "
+                "type=%s size=%d cap=%d actor=%s",
+                signal_id, event_type, original_size,
+                self.MAX_EVENT_PAYLOAD_BYTES, actor,
             )
             payload = payload.encode("utf-8")[: self.MAX_EVENT_PAYLOAD_BYTES].decode(
                 "utf-8", errors="replace"

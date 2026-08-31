@@ -129,7 +129,12 @@ def compute_signal_id(
     h.update(b"|")
     h.update(dir_.encode("utf-8"))
     h.update(b"|")
-    h.update(f"{level:.8f}".encode("utf-8"))
+    # Phase 05 (audit fix): round level to broker tick (5-digit EURUSD
+    # = 0.00001) so that two Pine runs emitting the same OB at
+    # 1.10000 vs 1.10000001 produce the same signal_id. Without
+    # rounding, a re-alert for the same setup gets a new id, bypasses
+    # dedupe, and the trader sees a duplicate Accept.
+    h.update(f"{round(level, 5):.5f}".encode("utf-8"))
     h.update(b"|")
     h.update(str(bar_time).encode("utf-8"))
     h.update(b"|")
@@ -142,7 +147,9 @@ def compute_signal_id(
 class AlertPayload(BaseModel):
     """Validated SMC|v1 alert payload."""
 
-    model_config = ConfigDict(frozen=False, str_strip_whitespace=True)
+    # Phase 05 (audit fix): frozen=True prevents accidental mutation
+    # after validation. Any field change should go through model_copy.
+    model_config = ConfigDict(frozen=True, str_strip_whitespace=True)
 
     @classmethod
     def model_construct(cls, _fields_set: set[str] | None = None, **values: Any) -> "AlertPayload":  # type: ignore[override]
@@ -160,15 +167,24 @@ class AlertPayload(BaseModel):
         """
         obj = super().model_construct(_fields_set=_fields_set, **values)
         if not obj.signal_id:
-            obj.signal_id = compute_signal_id(
-                event=obj.event,
-                symbol=obj.symbol,
-                tf=obj.tf,
-                dir_=obj.dir,
-                level=obj.level,
-                bar_time=obj.bar_time,
-                ob_id=obj.ob_id,
-                bos_id=obj.bos_id,
+            # frozen=True blocks direct setattr; use object.__setattr__
+            # to backfill the canonical hash. Pydantic v2 frozen models
+            # still allow this escape hatch (model_copy is the public
+            # path, but here we're inside model_construct which runs
+            # before the model is fully formed).
+            object.__setattr__(
+                obj,
+                "signal_id",
+                compute_signal_id(
+                    event=obj.event,
+                    symbol=obj.symbol,
+                    tf=obj.tf,
+                    dir_=obj.dir,
+                    level=obj.level,
+                    bar_time=obj.bar_time,
+                    ob_id=obj.ob_id,
+                    bos_id=obj.bos_id,
+                ),
             )
         return obj
 
@@ -241,15 +257,21 @@ class AlertPayload(BaseModel):
     @model_validator(mode="after")
     def _fill_signal_id(self) -> "AlertPayload":
         if not self.signal_id:
-            self.signal_id = compute_signal_id(
-                event=self.event,
-                symbol=self.symbol,
-                tf=self.tf,
-                dir_=self.dir,
-                level=self.level,
-                bar_time=self.bar_time,
-                ob_id=self.ob_id,
-                bos_id=self.bos_id,
+            # frozen=True blocks self.signal_id =; use object.__setattr__
+            # so the backfill doesn't violate the immutability contract.
+            object.__setattr__(
+                self,
+                "signal_id",
+                compute_signal_id(
+                    event=self.event,
+                    symbol=self.symbol,
+                    tf=self.tf,
+                    dir_=self.dir,
+                    level=self.level,
+                    bar_time=self.bar_time,
+                    ob_id=self.ob_id,
+                    bos_id=self.bos_id,
+                ),
             )
         return self
 
