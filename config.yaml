@@ -7,7 +7,21 @@ ftmo:
   max_total_loss: 0.10
   timezone: "Europe/Paris"      # FTMO dùng CE(S)T
 
-# Risk management
+# Execution costs (Phase 08 Step 2 — 2026-08-31)
+# Spread modeled per-pair; commission + slippage applied uniformly.
+# FTMO commission: $5/lot round trip = $2.50/side per standard lot.
+# See plans/260831-XXXX-system-validation-master/phase-08-trust-backtest.md
+execution:
+  spread_pips:
+    EURUSD: 0.5    # FTMO typical during active sessions
+    GBPUSD: 0.7
+    USDCHF: 0.8    # CHF typically wider spread
+    XAUUSD: 2.0    # gold spread wider than FX
+    BTCUSD: 5.0    # crypto spread widest
+  commission_per_lot_per_side: 2.50  # FTMO $5/lot round trip = $2.50 per side
+  slippage_pips:
+    mean: 0.1      # average slippage when filling
+    std: 0.3       # slippage distribution width (Gaussian)
 risk:
   per_trade_pct: 0.0055         # 0.55% per trade
   max_trades_per_day: 3

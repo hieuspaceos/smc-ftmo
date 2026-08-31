@@ -240,10 +240,28 @@ def run_backtest(
     end_iso = config.get("end_date")
 
     pip_value = pip_value_for_pair(pair)
+    # Execution costs (Phase 08 Step 2 — 2026-08-31).
+    # Reads optional 'execution' block from config. If absent, defaults to
+    # zero spread / zero commission / zero slippage (legacy behavior).
+    _exec_raw = config.get("execution")
+    execution_cfg = _exec_raw if isinstance(_exec_raw, dict) else {}
+    _spread_raw = execution_cfg.get("spread_pips")
+    spread_table = _spread_raw if isinstance(_spread_raw, dict) else {}
+    spread_pips = float(spread_table.get(pair, 0.0))
+    commission_per_side = float(
+        execution_cfg.get("commission_per_lot_per_side", 0.0)
+    )
+    _slip_raw = execution_cfg.get("slippage_pips")
+    slip_cfg = _slip_raw if isinstance(_slip_raw, dict) else {}
+    slippage_mean = float(slip_cfg.get("mean", 0.0))
+    slippage_std = float(slip_cfg.get("std", 0.0))
+    import numpy as _np
+    slippage_rng = _np.random.default_rng(
+        execution_cfg.get("slippage_seed", 42)
+    )
 
     data = load_multi_tf_data(pair)
     _ensure_h4(data)
-
     df_m15 = data.get("M15", pd.DataFrame())
     df_d = data.get("D", pd.DataFrame())
     df_h4 = data.get("H4", pd.DataFrame())
@@ -562,6 +580,10 @@ def run_backtest(
                     if exit_mode != "scale_in":
                         # Ladder mode: backtester tracks realized_r.
                         equity += orig_frac * r_now * risk_amount
+                        # Commission (Phase 08 Step 2): each side pays per-lot fee.
+                        # Closing a partial chunk incurs commission on that chunk.
+                        if commission_per_side > 0:
+                            equity -= commission_per_side * lot * float(val)
                         pos_rem *= max(0.0, 1.0 - float(val))
                         open_pos["pos_remaining"] = pos_rem
                         open_pos["realized_r"] = open_pos.get("realized_r", 0.0) + orig_frac * r_now
@@ -644,6 +666,12 @@ def run_backtest(
                     # r_final here. Either way: equity += r_final - prior_realized.
                     prior_realized = open_pos.get("realized_r", 0.0) if exit_mode != "scale_in" else 0.0
                     equity += (r_final - prior_realized) * risk_amount
+                    # Commission on remaining position (Phase 08 Step 2).
+                    # Partial closes already paid commission on closed chunks;
+                    # this covers the final residual lot.
+                    if commission_per_side > 0:
+                        residual_frac = open_pos.get("pos_remaining", 1.0)
+                        equity -= commission_per_side * lot * residual_frac
                     open_pos = None
                     break
 
@@ -664,6 +692,29 @@ def run_backtest(
                     # 500 pips, causing lot to balloon from 1.10 to 11000).
                     sl_dist_pips = sl_dist_price / pip_size_for_pair(pair)
                     lot = calculate_lot(account_size, risk_per_trade, sl_dist_pips, pip_value)
+                    # Execution costs (Phase 08 Step 2 — 2026-08-31).
+                    # Spread applied to entry: long pays ask (mid+spread/2),
+                    # short receives bid (mid-spread/2). Slippage applied
+                    # as Gaussian pips added against the trader on both
+                    # entry and exit (modeled on entry only here; SL/TP
+                    # exits use bar_close which already approximates real fill).
+                    if spread_pips > 0 or slippage_std > 0:
+                        slip_pips = 0.0
+                        if slippage_std > 0:
+                            slip_pips = max(0.0, slippage_rng.normal(
+                                slippage_mean, slippage_std
+                            ))
+                        total_pips = (spread_pips / 2.0) + slip_pips
+                        price_offset = total_pips * pip_size_for_pair(pair)
+                        if entry_info["side"] == "long":
+                            entry_info = dict(entry_info)
+                            entry_info["entry"] = entry_info["entry"] + price_offset
+                            # SL hit harder when slippage pushes it
+                            entry_info["sl"] = entry_info["sl"] - slip_pips * pip_size_for_pair(pair)
+                        else:
+                            entry_info = dict(entry_info)
+                            entry_info["entry"] = entry_info["entry"] - price_offset
+                            entry_info["sl"] = entry_info["sl"] + slip_pips * pip_size_for_pair(pair)
                     if exit_mode == "scale_in":
                         # Design B (optional): leg2 takes 50% profit at leg2_tp1_r.
                         # Opt-in via config: exit_mode=='scale_in' AND
@@ -713,6 +764,11 @@ def run_backtest(
             if action[0] == "closed":
                 r_final = exit_obj.r_multiple
                 pnl = r_final * open_pos["risk_amount"]
+                # Commission (Phase 08 Step 2): time-close at end of data
+                # closes any remaining position. pay commission on full lot
+                # (no partial closes were tracked in this path).
+                if commission_per_side > 0:
+                    pnl = pnl - commission_per_side * open_pos.get("lot", 0.0)
                 equity += pnl
                 trades.append({
                     "pair": pair,
