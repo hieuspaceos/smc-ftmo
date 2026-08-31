@@ -27,7 +27,7 @@ from data_loader import load_multi_tf_data
 from premium_discount import pd_series
 from risk_manager import FTMOGuard, calculate_lot
 from smc_signals import SMCSignals, calculate_atr
-from strategy import PartialTPExit, check_entry, pip_value_for_pair
+from strategy import PartialTPExit, check_entry, pip_size_for_pair, pip_value_for_pair
 from scale_in_exit import ScaleInExit
 
 
@@ -645,11 +645,17 @@ def run_backtest(
                 entry_info = check_entry(snapshot)
                 if entry_info is not None:
                     risk_amount = account_size * risk_per_trade
-                    sl_dist = abs(entry_info["entry"] - entry_info["sl"])
-                    if sl_dist <= 0:
+                    sl_dist_price = abs(entry_info["entry"] - entry_info["sl"])
+                    if sl_dist_price <= 0:
                         equity_curve.append((ts, equity))
                         continue
-                    lot = calculate_lot(account_size, risk_per_trade, sl_dist, pip_value)
+                    # calculate_lot expects sl_distance in PIPS, not price units.
+                    # Without this conversion, lot is sized 10000x off for EURUSD
+                    # (1 pip = 0.0001 price, smoke test passes 50 for 50-pip SL but
+                    # runtime was passing 0.0050 = 50 pips in price = 50 / 0.0001 =
+                    # 500 pips, causing lot to balloon from 1.10 to 11000).
+                    sl_dist_pips = sl_dist_price / pip_size_for_pair(pair)
+                    lot = calculate_lot(account_size, risk_per_trade, sl_dist_pips, pip_value)
                     if exit_mode == "scale_in":
                         # Design B (optional): leg2 takes 50% profit at leg2_tp1_r.
                         # Opt-in via config: exit_mode=='scale_in' AND

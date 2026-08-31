@@ -16,7 +16,16 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 
-# Standard pip value per lot (USD per 0.0001 move for FX, per 0.01 for XAU, per USD for BTC).
+# Pip SIZE (price distance per pip) — distinct from pip_value (USD per pip per lot).
+# EURUSD/XAUUSD standard: 1 pip = 0.0001 for 5-digit brokers, but XAUUSD quote is
+# 0.01 (2 decimals), so 1 "pip" by SMC convention = 0.01. BTCUSD trades in USD, so
+# 1 pip = 1.0.
+PIP_SIZES: Dict[str, float] = {
+    "EURUSD": 0.0001,
+    "XAUUSD": 0.01,
+    "BTCUSD": 1.0,
+}
+
 PIP_VALUES: Dict[str, float] = {
     "EURUSD": 10.0,
     "XAUUSD": 1.0,
@@ -27,6 +36,19 @@ PIP_VALUES: Dict[str, float] = {
 def pip_value_for_pair(pair: str) -> float:
     """USD value of one pip per 1.0 lot. Fallback to 10.0 (FX default)."""
     return PIP_VALUES.get(pair.upper(), 10.0)
+
+
+def pip_size_for_pair(pair: str) -> float:
+    """Price distance of one pip. Used to convert price-distance to pips.
+
+    EURUSD 5-digit broker: 1 pip = 0.0001.
+    XAUUSD 2-digit quote:  1 pip = 0.01.
+    BTCUSD USD quote:      1 pip = 1.0.
+    Fallback to 0.0001 (FX default).
+    """
+    return PIP_SIZES.get(pair.upper(), 0.0001)
+
+
 
 
 # ---------------------------------------------------------------------------
