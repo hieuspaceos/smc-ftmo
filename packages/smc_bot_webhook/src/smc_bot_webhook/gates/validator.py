@@ -207,8 +207,15 @@ class Validator:
         self._admin_override = admin_override
         self._signal_window = signal_window_minutes
 
+    @property
+    def admin_override(self) -> bool:
+        """Phase 06 (audit fix L5): public accessor so /healthz and
+        other consumers don't reach into the private attribute. Returns
+        whether the validator will short-circuit manual checks (env
+        ``GATE_ADMIN_OVERRIDE=1``)."""
+        return self._admin_override
+
     def validate(self, payload: AlertPayload, *, now: Any = None) -> ValidationOutcome:
-        """Evaluate all 11 gates. Pure orchestration — no I/O besides the store."""
         chart = evaluate_chart_gates(payload)
         snapshot = self._store.snapshot(now=now)
         manual = evaluate_manual_gates(snapshot)

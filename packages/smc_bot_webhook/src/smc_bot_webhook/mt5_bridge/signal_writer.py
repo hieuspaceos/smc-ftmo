@@ -152,12 +152,21 @@ class OutboxWriter:
     """
 
     SUBDIRS = ("pending", "processing", "done", "failed")
+    # Phase 06 (audit fix L6): cap the number of pending signals to
+    # avoid disk-full when the MT5 EA is stuck or absent. Default 256
+    # covers a full trading day. The cap is enforced in write_atomic.
+    DEFAULT_MAX_PENDING = 256
 
-    def __init__(self, outbox_dir: Path) -> None:
+    def __init__(
+        self, outbox_dir: Path, max_pending: int = DEFAULT_MAX_PENDING,
+    ) -> None:
+        if max_pending <= 0:
+            raise ValueError(f"max_pending must be > 0, got {max_pending}")
         self.outbox_dir = Path(outbox_dir)
         self.outbox_dir.mkdir(parents=True, exist_ok=True)
         for sub in self.SUBDIRS:
             (self.outbox_dir / sub).mkdir(exist_ok=True)
+        self.max_pending = max_pending
 
     @property
     def pending(self) -> Path:
@@ -197,6 +206,18 @@ class OutboxWriter:
         if self.is_pending(signal_id):
             raise SignalAlreadyWrittenError(
                 f"signal_id={signal_id} already pending or processing"
+            )
+        # Phase 06 (audit fix L6): enforce max_pending cap to avoid
+        # disk-fill when the MT5 EA is stuck or absent. Counts
+        # pending + processing since both represent in-flight signals.
+        in_flight = (
+            sum(1 for _ in self.pending.glob("*.json"))
+            + sum(1 for _ in (self.outbox_dir / "processing").glob("*.json"))
+        )
+        if in_flight >= self.max_pending:
+            raise SignalAlreadyWrittenError(
+                f"outbox at capacity ({in_flight}/{self.max_pending}); "
+                "MT5 EA may be stuck. Refusing new signal."
             )
         target = self.pending / f"{signal_id}.json"
         payload = json.dumps(record.to_dict(), indent=2)
