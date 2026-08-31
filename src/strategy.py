@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Tuple
 PIP_SIZES: Dict[str, float] = {
     "EURUSD": 0.0001,
     "GBPUSD": 0.0001,
+    "USDCHF": 0.0001,
     "XAUUSD": 0.01,
     "BTCUSD": 1.0,
 }
@@ -30,10 +31,10 @@ PIP_SIZES: Dict[str, float] = {
 PIP_VALUES: Dict[str, float] = {
     "EURUSD": 10.0,
     "GBPUSD": 10.0,
+    "USDCHF": 10.0,
     "XAUUSD": 1.0,
     "BTCUSD": 1.0,
 }
-
 
 def pip_value_for_pair(pair: str) -> float:
     """USD value of one pip per 1.0 lot. Fallback to 10.0 (FX default)."""

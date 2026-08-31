@@ -105,6 +105,11 @@ def print_pair_report(pair: str, trades: list, equity: list, elapsed: float) -> 
     print(f"\n  Winrate: {wr:.1f}%  ({n_win}W / {n_loss}L)")
     print(f"  Total R: {total_r:+.1f}R  (AvgR {avg_r:+.3f})")
 
+    # Exit reasons — always (not conditional on equity)
+    reasons = Counter(t.get('exit_reason', '?') for t in trades)
+    metrics["exit_reasons"] = dict(reasons)
+    print(f"\n  Exit reasons: {dict(reasons)}")
+
     # Max DD + final equity
     if equity:
         eq = pd.DataFrame(equity, columns=['ts', 'eq']).set_index('ts')['eq']
@@ -118,13 +123,6 @@ def print_pair_report(pair: str, trades: list, equity: list, elapsed: float) -> 
         metrics.update({"max_dd_pct": max_dd_pct, "max_dd_dollar": max_dd_dollar,
                          "final": final, "net_pnl": net_pnl, "roi": roi})
         print(f"  Max DD:  {max_dd_pct:.2f}% (${max_dd_dollar:,.0f})")
-        print(f"  Final:   ${final:,.0f}  (Net: ${net_pnl:+,.0f}, ROI {roi:+.1f}%)")
-
-    # Exit reasons
-    reasons = Counter(t.get('exit_reason', '?') for t in trades)
-    metrics["exit_reasons"] = dict(reasons)
-    print(f"\n  Exit reasons: {dict(reasons)}")
-
     # Profit factor (gross win $ / gross loss $) — best-effort, only if R data present
     gross_win = sum(float(t.get('r_multiple', 0)) for t in trades if float(t.get('r_multiple', 0)) > 0)
     gross_loss = abs(sum(float(t.get('r_multiple', 0)) for t in trades if float(t.get('r_multiple', 0)) < 0))
@@ -168,13 +166,13 @@ def print_summary_table(all_metrics: list[dict]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Multi-pair backtest runner")
     parser.add_argument(
-        "--pair", choices=["EURUSD", "XAUUSD", "GBPUSD", "BTCUSD", "ALL"],
+        "--pair", choices=["EURUSD", "XAUUSD", "GBPUSD", "USDCHF", "BTCUSD", "ALL"],
         default="ALL",
-        help="Pair to backtest (default: ALL)",
+        help="Pair to backtest (default: ALL — runs EURUSD, XAUUSD, GBPUSD, USDCHF)",
     )
     args = parser.parse_args()
 
-    pairs = ["EURUSD", "XAUUSD", "GBPUSD"] if args.pair == "ALL" else [args.pair]
+    pairs = ["EURUSD", "XAUUSD", "GBPUSD", "USDCHF"] if args.pair == "ALL" else [args.pair]
 
     print(f"Running backtest for: {', '.join(pairs)}")
     print(f"Window: {DEFAULT_CFG['start_date']} → {DEFAULT_CFG['end_date']}")
