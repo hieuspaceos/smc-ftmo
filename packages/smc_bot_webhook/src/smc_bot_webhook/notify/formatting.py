@@ -36,11 +36,41 @@ DIR_EMOJI: Final[dict[str, str]] = {
     "none": "·",
 }
 
+# Telegram MarkdownV2 reserved characters that must be escaped in
+# free-text portions of a message. Reference:
+# https://core.telegram.org/bots/api#markdownv2-style
+_MD2_RESERVED = set("_*[]()~`>#+-=|{}.!" )
+
+
+def _md2_escape(text: str) -> str:
+    """Escape a string for use in a Telegram MarkdownV2 message body.
+
+    Each reserved character is prefixed with a backslash. Pre-escaped
+    sequences (e.g. ``\\.``) are left alone so callers that pre-escape
+    their own content keep working.
+    """
+    if not text:
+        return text
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and i + 1 < len(text) and text[i + 1] in _MD2_RESERVED:
+            # already escaped — keep both chars
+            out.append(c)
+            out.append(text[i + 1])
+            i += 2
+            continue
+        if c in _MD2_RESERVED:
+            out.append("\\")
+        out.append(c)
+        i += 1
+    return "".join(out)
+
 
 @dataclass(frozen=True)
 class CallbackAction:
     """Result of parsing a Telegram callback_data payload."""
-
     action: str  # 'accept' | 'reject'
     signal_id: str
     nonce: str
@@ -103,26 +133,33 @@ def format_telegram_message(
     *,
     gate_states: dict[str, bool | None] | None = None,
 ) -> str:
-    """Render Markdown message body for Telegram."""
+    """Render MarkdownV2 message body for Telegram.
+
+    Free-text fields (``symbol``, ``tf``, ``dir``, ``state``, ``reason``)
+    are escaped with ``_md2_escape`` to prevent 400 errors from
+    Telegram when the payload contains reserved characters like
+    ``_*[]()``. Numeric / structured fields are wrapped in inline
+    code (``...``) which doesn't require escaping.
+    """
     bar_time_iso = (
         datetime.fromtimestamp(payload.bar_time, tz=timezone.utc).isoformat()
         if payload.bar_time > 0
         else "n/a"
     )
-    state_emoji = STATE_EMOJI.get(payload.state, "·")
     dir_text = DIR_EMOJI.get(payload.dir, payload.dir)
 
     lines = [
-        f"*SMC Alert* — {payload.symbol} {payload.tf}",
-        f"{state_emoji} State: `{payload.state}`  •  {dir_text}",
-        f"Event: `{payload.event}`  •  Reason: `{payload.reason or '—'}`",
+        f"*SMC Alert* — {_md2_escape(payload.symbol)} {_md2_escape(payload.tf)}",
+        f"{STATE_EMOJI.get(payload.state, '·')} State: `{_md2_escape(payload.state)}`"
+        f"  •  {_md2_escape(dir_text)}",
+        f"Event: `{_md2_escape(payload.event)}`  •  Reason: `{_md2_escape(payload.reason or '—')}`",
         f"Level: `{payload.level:.5f}`  •  Bar: `{bar_time_iso}`",
         f"OB id: `{payload.ob_id}`  •  BOS id: `{payload.bos_id}`",
         "",
         "*Manual gates*",
         render_gate_checklist(gate_states),
         "",
-        f"signal_id: `{payload.signal_id}`",
+        f"signal\\_id: `{payload.signal_id}`",
     ]
     return "\n".join(lines)
 

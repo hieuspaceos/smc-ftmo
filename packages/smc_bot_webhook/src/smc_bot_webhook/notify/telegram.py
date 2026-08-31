@@ -271,6 +271,7 @@ class TelegramDispatcher:
         allowed_user_ids: set[int],
         max_retries: int = 3,
         backoff_base_seconds: float = 1.0,
+        send_concurrency: int = 5,
     ) -> None:
         self._transport = transport
         self._chat_id = chat_id
@@ -278,6 +279,11 @@ class TelegramDispatcher:
         self._max_retries = max_retries
         self._backoff_base = backoff_base_seconds
         self._message_ids: dict[str, int] = {}
+        # Phase 04 (audit fix): bound concurrent Telegram sends so a
+        # burst of alerts cannot stall the event loop or exceed
+        # Telegram's per-chat limits. Default 5 leaves headroom for
+        # other in-flight tasks.
+        self._send_sem = asyncio.Semaphore(send_concurrency)
 
     @property
     def enabled(self) -> bool:
@@ -327,30 +333,34 @@ class TelegramDispatcher:
         keyboard: dict[str, Any],
     ) -> int | None:
         last_exc: Exception | None = None
-        for attempt in range(self._max_retries):
-            try:
-                result = await self._transport.send_message(
-                    chat_id=self._chat_id,
-                    text=text,
-                    reply_markup=keyboard,
-                    parse_mode="Markdown",
-                )
-                msg_id = int(result["message_id"])
-                self._message_ids[payload.signal_id] = msg_id
-                logger.info(
-                    "telegram send ok: signal_id=%s message_id=%s attempt=%d",
-                    payload.signal_id, msg_id, attempt + 1,
-                )
-                return msg_id
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                backoff = self._backoff_base * (2 ** attempt)
-                logger.warning(
-                    "telegram send failed: signal_id=%s attempt=%d/%d exc=%s; sleeping %.1fs",
-                    payload.signal_id, attempt + 1, self._max_retries, exc, backoff,
-                )
-                if attempt + 1 < self._max_retries:
-                    await asyncio.sleep(backoff)
+        async with self._send_sem:
+            for attempt in range(self._max_retries):
+                try:
+                    result = await asyncio.wait_for(
+                        self._transport.send_message(
+                            chat_id=self._chat_id,
+                            text=text,
+                            reply_markup=keyboard,
+                            parse_mode="MarkdownV2",
+                        ),
+                        timeout=10.0,
+                    )
+                    msg_id = int(result["message_id"])
+                    self._message_ids[payload.signal_id] = msg_id
+                    logger.info(
+                        "telegram send ok: signal_id=%s message_id=%s attempt=%d",
+                        payload.signal_id, msg_id, attempt + 1,
+                    )
+                    return msg_id
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    backoff = self._backoff_base * (2 ** attempt)
+                    logger.warning(
+                        "telegram send failed: signal_id=%s attempt=%d/%d exc=%s; sleeping %.1fs",
+                        payload.signal_id, attempt + 1, self._max_retries, exc, backoff,
+                    )
+                    if attempt + 1 < self._max_retries:
+                        await asyncio.sleep(backoff)
         logger.error(
             "telegram send exhausted retries: signal_id=%s last_exc=%s",
             payload.signal_id, last_exc,

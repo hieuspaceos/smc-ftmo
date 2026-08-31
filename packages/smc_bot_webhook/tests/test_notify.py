@@ -52,9 +52,9 @@ class TestFormatTelegram:
     def test_includes_state_with_emoji(self) -> None:
         p = parse_payload(VALID)
         text = format_telegram_message(p)
-        assert "chart-qualified" in text
+        # Phase 04: state is now MarkdownV2-escaped inside inline code.
+        assert "chart\\-qualified" in text
         assert "✅" in text
-
     def test_long_dir_renders_green(self) -> None:
         p = parse_payload(VALID)
         text = format_telegram_message(p)

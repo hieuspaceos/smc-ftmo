@@ -105,12 +105,19 @@ class DiscordMirror:
         max_retries: int = 3,
         backoff_base_seconds: float = 1.0,
         timeout_seconds: float = 10.0,
+        rate_limit_per_10s: int = 5,
     ) -> None:
         self._transport = transport
         self._webhook_url = webhook_url
         self._max_retries = max_retries
         self._backoff_base = backoff_base_seconds
         self._timeout_seconds = timeout_seconds
+        # Phase 04 (audit fix): client-side rate limit to avoid
+        # Discord 429 storm on burst. Tracks wall-clock timestamps
+        # of recent sends and sleeps until the 10s window has space.
+        self._rate_limit = rate_limit_per_10s
+        self._recent_sends: list[float] = []
+        self._rate_lock = asyncio.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -128,8 +135,21 @@ class DiscordMirror:
         *,
         gate_states: dict[str, bool | None] | None = None,
     ) -> bool:
-        """Mirror the alert. Returns True on success, False after retries."""
         text = format_discord_message(payload, gate_states=gate_states)
+        # Phase 04: client-side rate limit. Wait until under the
+        # per-10s cap before calling the transport.
+        import time as _time
+        async with self._rate_lock:
+            now = _time.monotonic()
+            self._recent_sends = [t for t in self._recent_sends if now - t < 10.0]
+            if len(self._recent_sends) >= self._rate_limit:
+                wait = 10.0 - (now - self._recent_sends[0])
+                if wait > 0:
+                    logger.warning(
+                        "discord client rate-limit hit, sleeping %.2fs", wait,
+                    )
+                    await asyncio.sleep(wait)
+            self._recent_sends.append(_time.monotonic())
         last_exc: Exception | None = None
         for attempt in range(self._max_retries):
             try:
