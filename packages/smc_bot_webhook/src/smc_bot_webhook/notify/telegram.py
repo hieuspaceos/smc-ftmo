@@ -105,6 +105,11 @@ class FakeTelegramTransport:
         reply_markup: dict[str, Any] | None = None,
         parse_mode: str | None = "Markdown",
     ) -> dict[str, Any]:
+        # Phase 03 (audit fix): honor fail_n_times for edits so retry logic
+        # in _edit_with_retry can be tested.
+        if self.fail_n_times > 0:
+            self.fail_n_times -= 1
+            raise RuntimeError("simulated transient failure")
         self.edits.append(
             {
                 "chat_id": chat_id,
