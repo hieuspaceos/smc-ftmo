@@ -1,0 +1,1199 @@
+//@version=6
+indicator("SMC Engine Indicator", "SMC Engine", overlay=true, max_labels_count=500, max_lines_count=200, max_boxes_count=500)
+
+//==============================================================================
+// Inputs
+//==============================================================================
+groupProfile   = "Profile"
+groupCore      = "Core"
+groupDisplay   = "Display"
+groupRulebook  = "Rulebook"
+
+profile      = input.string("Rulebook 8W", "Profile", options=["Rulebook 8W", "Engine Audit"], group=groupProfile)
+displayMode  = input.string("Recent", "Display mode", options=["Recent", "All"], group=groupProfile)
+
+swingWindow        = input.int(5, "Swing left/right", minval=1, group=groupCore)
+atrPeriod          = input.int(14, "ATR period", minval=1, group=groupCore)
+displacementMult   = input.float(1.5, "Displacement ATR", minval=0.1, step=0.05, group=groupCore)
+structureBufferAtr = input.float(0.0, "Structure close buffer ATR", minval=0.0, step=0.05, group=groupCore)
+sweepBufferAtr     = input.float(0.05, "Sweep wick buffer ATR", minval=0.0, step=0.01, group=groupCore)
+obLookback         = input.int(20, "OB lookback", minval=1, group=groupCore)
+obExpiryBars       = input.int(200, "OB expiry bars", minval=1, group=groupCore)
+obCapPerSide       = input.int(64, "OB cap per side", minval=1, maxval=256, group=groupCore)
+fvgExpiryBars      = input.int(200, "FVG expiry bars", minval=1, group=groupCore)
+fvgCapPerSide      = input.int(64, "FVG cap per side", minval=1, maxval=256, group=groupCore)
+poolToleranceAtr   = input.float(0.15, "Pool tolerance ATR", minval=0.01, step=0.01, group=groupCore)
+poolMinMembers     = input.int(2, "Pool min members", minval=2, maxval=8, group=groupCore)
+
+showSwings         = input.bool(false, "Show swings", group=groupDisplay)
+showDisplacement   = input.bool(false, "Show displacement", group=groupDisplay)
+showStructure      = input.bool(true,  "Show BOS / CHoCH", group=groupDisplay)
+showSweeps         = input.bool(false, "Show sweeps", group=groupDisplay)
+showOrderBlocks    = input.bool(true,  "Show order blocks", group=groupDisplay)
+showFvgs           = input.bool(false, "Show FVGs", group=groupDisplay)
+showContext        = input.bool(true,  "Show context table", group=groupDisplay)
+showPools          = input.bool(false, "Show liquidity pools", group=groupDisplay)
+recentLabelBudget  = input.int(120, "Recent label budget", minval=10, maxval=500, group=groupDisplay)
+recentBoxBudget    = input.int(40, "Recent box budget", minval=10, maxval=200, group=groupDisplay)
+
+displayPreset            = input.string("Decision", "Display preset", options=["Decision", "Context", "Debug", "Custom"], group=groupRulebook)
+htfDailyEnabled          = input.bool(true, "Use Daily HTF", group=groupRulebook)
+htfH4Enabled             = input.bool(true, "Use H4 HTF", group=groupRulebook)
+rulebookCleanSweepAtr    = input.float(0.05, "Rulebook clean sweep ATR", minval=0.05, step=0.05, group=groupRulebook)
+rulebookScoreThreshold   = input.float(4.0, "Rulebook score threshold", minval=0.0, step=0.5, group=groupRulebook)
+rulebookEntryProximityAtr= input.float(1.5, "Entry proximity ATR", minval=0.1, step=0.1, group=groupRulebook)
+rulebookSlEdgeAtr        = input.float(0.2, "SL edge buffer ATR", minval=0.0, step=0.05, group=groupRulebook)
+rulebookSlMinAtr         = input.float(2.5, "Min SL distance ATR (skip too-tight OBs)", minval=0.0, step=0.1, group=groupRulebook)
+rulebookSlMaxAtr         = input.float(4.0, "Max SL distance ATR", minval=0.1, step=0.1, group=groupRulebook)
+rulebookMinRR            = input.float(2.5, "Minimum 2R target", minval=0.5, step=0.5, group=groupRulebook)
+
+useScaleInMode           = input.bool(true, "Use scale-in exit mode (Design A)", group=groupRulebook)
+scaleInLeg2Tp1R          = input.float(2.0, "Scale-in leg2 TP1 (R, <=2.0=off, Design A)", minval=0.0, maxval=3.5, step=0.5,
+group=groupRulebook)
+showScaleInLines         = input.bool(true, "Show scale-in TP lines on chart", group=groupRulebook)
+
+
+manualRiskOk      = input.bool(false, "Risk 0.55% acknowledged", group=groupRulebook)
+manualTradesLeft  = input.int(3, "Trades today left", minval=0, maxval=10, group=groupRulebook)
+manualDailyROk    = input.bool(false, "Daily loss -2R acknowledged", group=groupRulebook)
+manualPosOk       = input.bool(false, "No open position", group=groupRulebook)
+manualSpreadOk    = input.bool(false, "Spread/news clean", group=groupRulebook)
+manualJudgmentOk  = input.bool(false, "Trader judgment clear", group=groupRulebook)
+
+customShowStructure     = input.bool(true,  "Custom: BOS / CHoCH", group=groupDisplay)
+customShowOrderBlocks   = input.bool(true,  "Custom: order blocks", group=groupDisplay)
+customShowSwings       = input.bool(false, "Custom: swings", group=groupDisplay)
+customShowDisplacement = input.bool(false, "Custom: displacement", group=groupDisplay)
+customShowSweeps       = input.bool(false, "Custom: sweeps", group=groupDisplay)
+customShowFvgs         = input.bool(false, "Custom: FVGs", group=groupDisplay)
+customShowPools        = input.bool(false, "Custom: pools", group=groupDisplay)
+customShowDebugRows    = input.bool(false, "Custom: debug rows", group=groupDisplay)
+//==============================================================================
+// Display preset precedence
+//==============================================================================
+auditMode       = profile == "Engine Audit"
+presetDecision  = displayPreset == "Decision"
+presetContext   = displayPreset == "Context"
+presetDebug     = displayPreset == "Debug"
+presetCustom    = displayPreset == "Custom"
+
+manualGatesAllOk    = manualRiskOk and manualTradesLeft > 0 and manualDailyROk and manualPosOk and manualSpreadOk and manualJudgmentOk
+manualGatesUnknown  = not (manualRiskOk or manualDailyROk or manualPosOk or manualSpreadOk or manualJudgmentOk)
+
+effectiveShowPools        = auditMode and showPools
+effectiveShowDisplacement = auditMode and showDisplacement
+effectiveShowSwings       = auditMode and showSwings
+effectiveShowSweeps       = auditMode and showSweeps
+effectiveShowFvgs         = auditMode and showFvgs
+
+presetShowSwings       = presetDebug or (presetCustom and customShowSwings)
+presetShowDisplacement = presetDebug or (presetCustom and customShowDisplacement)
+presetShowSweeps       = (presetContext or presetDebug) or (presetCustom and customShowSweeps)
+presetShowFvgs         = (presetContext or presetDebug) or (presetCustom and customShowFvgs)
+presetShowPools        = (presetContext or presetDebug) or (presetCustom and customShowPools)
+presetShowDebugRows    = presetDebug or (presetCustom and customShowDebugRows)
+
+labelBudget = displayMode == "Recent" ? recentLabelBudget : math.min(recentLabelBudget * 3, 500)
+boxBudget   = displayMode == "Recent" ? recentBoxBudget : math.min(recentBoxBudget * 3, 200)
+
+// When Debug preset is chosen, force-enable all audit overlays regardless of input toggle
+// When Custom preset is chosen, individual customShowX flags control visibility
+showStructureEffective   = (presetDecision or presetContext or presetDebug or (presetCustom and customShowStructure)) and showStructure
+showOrderBlocksEffective = (presetDecision or presetContext or presetDebug or (presetCustom and customShowOrderBlocks)) and showOrderBlocks
+// Swings and step lines hidden by default - use Volume Profile on TradingView for visual structure
+// Debug preset force-on; Custom requires customShowSwings; Decision/Context require explicit tick + Debug fallback
+showSwingsEffective      = presetDebug or (presetCustom and customShowSwings)
+showSweepsEffective      = (presetDecision or presetContext or presetDebug or (presetCustom and customShowSweeps)) and showSweeps
+showFvgsEffective        = (presetDecision or presetContext or presetDebug or (presetCustom and customShowFvgs)) and showFvgs
+showPoolsEffective       = (presetDecision or presetContext or presetDebug or (presetCustom and customShowPools)) and showPools
+
+
+//==============================================================================
+// Data structures
+//==============================================================================
+type SwingLevel
+    int id
+    int direction
+    float level
+    int pivotIndex
+    int activationIndex
+    bool consumed
+
+type OrderBlockZone
+    int id
+    int direction
+    int originIndex
+    int activationIndex
+    float top
+    float bottom
+    int structureBar
+    bool touched
+    bool dead
+    int firstTouchIndex
+    int invalidationIndex
+    int expiryIndex
+    box zoneBox
+    int linkedBosId
+
+type FairValueGapZone
+    int id
+    int direction
+    int originIndex
+    int activationIndex
+    float top
+    float bottom
+    bool touched
+    bool dead
+    int firstTouchIndex
+    int fillIndex
+    int expiryIndex
+    box zoneBox
+
+type LiquidityPool
+    int id
+    int direction
+    int activationIndex
+    int lastScannedIndex
+    float levelMean
+    float levelMin
+    float levelMax
+    string memberIds
+    string memberLevels
+    int sweepIndex
+    float sweepLevel
+    bool swept
+    box poolBox
+
+//==============================================================================
+// Drawing helpers
+//==============================================================================
+f_trim_label_queue(label[] queue, int maxCount) =>
+    while array.size(queue) > maxCount
+        old = array.shift(queue)
+        if not na(old)
+            label.delete(old)
+
+f_track_label(label[] queue, label item, int maxCount) =>
+    array.push(queue, item)
+    f_trim_label_queue(queue, maxCount)
+
+f_trim_box_queue(box[] queue, int maxCount) =>
+    while array.size(queue) > maxCount
+        old = array.shift(queue)
+        if not na(old)
+            box.delete(old)
+
+f_track_box(box[] queue, box item, int maxCount) =>
+    array.push(queue, item)
+    f_trim_box_queue(queue, maxCount)
+
+f_zone_fill(int direction, bool dimmed) =>
+    direction == 1 ? color.new(dimmed ? color.green : color.lime, dimmed ? 92 : 86) : color.new(dimmed ? color.red : color.maroon, dimmed ? 92 : 86)
+
+f_zone_border(int direction, bool dimmed) =>
+    direction == 1 ? color.new(dimmed ? color.green : color.lime, dimmed ? 50 : 20) : color.new(dimmed ? color.red : color.maroon, dimmed ? 50 : 20)
+
+f_swing_label_style(int direction) =>
+    direction == 1 ? label.style_label_down : label.style_label_up
+
+f_swing_color(int direction) =>
+    direction == 1 ? color.new(color.orange, 0) : color.new(color.aqua, 0)
+
+f_pool_color(int direction) =>
+    direction == 1 ? color.new(color.purple, 0) : color.new(color.blue, 0)
+
+f_pool_box_color(int direction, bool swept) =>
+    direction == 1 ? (swept ? color.new(color.gray, 85) : color.new(color.purple, 88)) : (swept ? color.new(color.gray, 85) : color.new(color.blue, 88))
+
+f_pool_border_color(int direction, bool swept) =>
+    direction == 1 ? (swept ? color.new(color.gray, 60) : color.new(color.purple, 40)) : (swept ? color.new(color.gray, 60) : color.new(color.blue, 40))
+
+f_member_ids_str(string existing, int id) =>
+    existing == "" ? str.tostring(id) : existing + "|" + str.tostring(id)
+
+f_member_levels_str(string existing, float level) =>
+    existing == "" ? str.tostring(level, format.mintick) : existing + "|" + str.tostring(level, format.mintick)
+
+//==============================================================================
+// Core math
+//==============================================================================
+prevClose          = bar_index >= 1 ? nz(close[1], close) : close
+trueRange          = math.max(high - low, math.max(math.abs(high - prevClose), math.abs(low - prevClose)))
+atr                = ta.sma(trueRange, atrPeriod)
+candleRange        = high - low
+bodyRange          = math.abs(close - open)
+rangeAtr           = atr > 0 ? candleRange / atr : na
+bodyAtr            = atr > 0 ? bodyRange / atr : na
+bodyRatio          = candleRange > 0 ? bodyRange / candleRange : na
+closeLocation      = candleRange > 0 ? (close - low) / candleRange : na
+// Adaptive threshold: M15 and lower need higher mult (more noise), H1+ keeps lower mult
+// float adaptiveDisplacementMult = timeframe.in_seconds() <= 900 ? displacementMult : timeframe.in_seconds() <= 3600 ? displacementMult - 0.5 : displacementMult - 0.75
+float adaptiveDisplacementMult = displacementMult
+expansionQualified = not na(atr) and candleRange > adaptiveDisplacementMult * atr
+expansionDirection = close > open ? 1 : close < open ? -1 : 0
+
+//==============================================================================
+// Persistent state
+//==============================================================================
+var swingHighs  = array.new<SwingLevel>()
+var swingLows   = array.new<SwingLevel>()
+var sweepHighs  = array.new<SwingLevel>()
+var sweepLows   = array.new<SwingLevel>()
+var bullishObs  = array.new<OrderBlockZone>()
+var bearishObs  = array.new<OrderBlockZone>()
+var bullishFvgs = array.new<FairValueGapZone>()
+var bearishFvgs = array.new<FairValueGapZone>()
+var highPools   = array.new<LiquidityPool>()
+var lowPools    = array.new<LiquidityPool>()
+var poolBoxQueue = array.new_box()
+var boxQueue     = array.new_box()
+var labelQueue   = array.new_label()
+
+var int   nextSwingId           = 0
+var int   nextObId              = 0
+var int   nextFvgId             = 0
+var int   nextPoolId            = 0
+var int   nextStructureId       = 0
+var int   structureTrend        = 0
+var int   activeStructureHighIdx = -1
+var int   activeStructureLowIdx  = -1
+var int   activeSweepHighIdx     = -1
+var int   activeSweepLowIdx      = -1
+var float displaySwingHigh       = na
+var float displaySwingLow        = na
+var int   displaySwingDirection  = 0
+
+var string lastStructureText = "none"
+var string lastSweepText     = "none"
+var string lastObText        = "none"
+var string lastFvgText       = "none"
+var string lastPoolText      = "none"
+var string lastDiagnostic    = "none"
+
+var int   bosSignal   = 0
+var int   chochSignal = 0
+var float brokenLevel = na
+
+var int   htfDTrend         = 0
+var int   htfH4Trend        = 0
+var float htfH4Equilibrium  = na
+var float htfH4RangeHigh    = na
+var float htfH4RangeLow     = na
+var int   htfDLastHighIdx   = -1
+var int   htfDLastLowIdx    = -1
+var int   htfH4LastHighIdx  = -1
+var int   htfH4LastLowIdx   = -1
+
+var float scaleInTrigger    = na
+var float finalTp           = na
+
+var int   lastBullBosId        = -1
+var int   lastBullChoChId      = -1
+var int   lastBearBosId        = -1
+var int   lastBearChoChId      = -1
+var int   rulebookObId         = -1
+var int   rulebookObDir        = 0
+var float rulebookObTop        = na
+var float rulebookObBottom     = na
+var int   rulebookObActivation = -1
+var string rulebookState       = "no-signal"
+var string rulebookRejection   = "none"
+var float rulebookScore        = 0.0
+var float rulebookEntry        = na
+var float rulebookStop         = na
+var float rulebookTarget       = na
+var int   rulebookTouchBar     = -1
+
+var int   lastCleanSweepBar    = -1
+var int   lastCleanSweepDir    = 0
+var float lastCleanSweepLevel  = na
+
+//==============================================================================
+// Utility functions
+//==============================================================================
+f_count_live_obs(array<OrderBlockZone> zones) =>
+    int liveCount = 0
+    int zoneCount = array.size(zones)
+    if zoneCount > 0
+        for i = 0 to zoneCount - 1
+            zone = array.get(zones, i)
+            if not zone.dead
+                liveCount += 1
+    liveCount
+
+f_count_live_fvgs(array<FairValueGapZone> zones) =>
+    int liveCount = 0
+    int zoneCount = array.size(zones)
+    if zoneCount > 0
+        for i = 0 to zoneCount - 1
+            zone = array.get(zones, i)
+            if not zone.dead
+                liveCount += 1
+    liveCount
+
+f_expire_oldest_live_ob(array<OrderBlockZone> zones, int expiryBar) =>
+    int expiredId = -1
+    int zoneCount = array.size(zones)
+    if zoneCount > 0
+        for i = 0 to zoneCount - 1
+            zone = array.get(zones, i)
+            if expiredId == -1 and not zone.dead
+                zone.dead := true
+                zone.expiryIndex := expiryBar
+                if not na(zone.zoneBox)
+                    box.set_right(zone.zoneBox, expiryBar)
+                    box.set_bgcolor(zone.zoneBox, f_zone_fill(zone.direction, true))
+                    box.set_border_color(zone.zoneBox, f_zone_border(zone.direction, true))
+                array.set(zones, i, zone)
+                expiredId := zone.id
+    expiredId
+
+f_expire_oldest_live_fvg(array<FairValueGapZone> zones, int expiryBar) =>
+    int expiredId = -1
+    int zoneCount = array.size(zones)
+    if zoneCount > 0
+        for i = 0 to zoneCount - 1
+            zone = array.get(zones, i)
+            if expiredId == -1 and not zone.dead
+                zone.dead := true
+                zone.expiryIndex := expiryBar
+                if not na(zone.zoneBox)
+                    box.set_right(zone.zoneBox, expiryBar)
+                    box.set_bgcolor(zone.zoneBox, f_zone_fill(zone.direction, true))
+                    box.set_border_color(zone.zoneBox, f_zone_border(zone.direction, true))
+                array.set(zones, i, zone)
+                expiredId := zone.id
+    expiredId
+
+f_find_ob_origin(int direction, int breakBar, int lookbackBars) =>
+    int origin = -1
+    if breakBar > 0 and breakBar <= bar_index
+        int lookbackAtr = math.max(1, lookbackBars)
+        int baseOffset = bar_index - breakBar
+        for j = 1 to lookbackAtr
+            int refOffset = baseOffset + j
+            if refOffset > 9999
+                break
+            if direction == 1
+                if close[refOffset] < open[refOffset]
+                    origin := breakBar - j
+                    break
+            else
+                if close[refOffset] > open[refOffset]
+                    origin := breakBar - j
+                    break
+    origin
+f_make_structure_label(int eventDirection, string eventText) =>
+    float y = eventDirection == 1 ? high : low
+    style = eventDirection == 1 ? label.style_label_up : label.style_label_down
+    color clr = eventDirection == 1 ? color.new(color.lime, 0) : color.new(color.red, 0)
+    label.new(bar_index, y, eventText, xloc=xloc.bar_index, style=style, textcolor=color.white, color=clr, size=size.tiny)
+
+f_make_swing_label(int direction, int xBar, float yPrice) =>
+    string txt = direction == 1 ? "SH" : "SL"
+    label.new(xBar, yPrice, txt, xloc=xloc.bar_index, style=f_swing_label_style(direction), textcolor=color.black, color=f_swing_color(direction), size=size.tiny)
+
+f_make_sweep_label(int direction) =>
+    float y = direction == 1 ? low : high
+    style = direction == 1 ? label.style_label_up : label.style_label_down
+    string sweepText = direction == 1 ? "Sweep L" : "Sweep H"
+    color clr = direction == 1 ? color.new(color.teal, 0) : color.new(color.fuchsia, 0)
+    label.new(bar_index, y, sweepText, xloc=xloc.bar_index, style=style, textcolor=color.white, color=clr, size=size.tiny)
+
+
+//==============================================================================
+// Per-bar event state reset
+//==============================================================================
+bosSignal   := 0
+chochSignal := 0
+brokenLevel := na
+
+//==============================================================================
+// Structure evaluation
+//==============================================================================
+if barstate.isconfirmed
+    bool upperBreak = false
+    bool lowerBreak = false
+    bool validHigh  = activeStructureHighIdx >= 0 and activeStructureHighIdx < array.size(swingHighs)
+    bool validLow   = activeStructureLowIdx  >= 0 and activeStructureLowIdx  < array.size(swingLows)
+
+    if validHigh
+        activeHigh = array.get(swingHighs, activeStructureHighIdx)
+        if not activeHigh.consumed and close > activeHigh.level + structureBufferAtr * nz(atr, 0.0)
+            upperBreak := true
+
+    if validLow
+        activeLow = array.get(swingLows, activeStructureLowIdx)
+        if not activeLow.consumed and close < activeLow.level - structureBufferAtr * nz(atr, 0.0)
+            lowerBreak := true
+
+    bool invariantOk = true
+    if validHigh and validLow
+        invHigh = array.get(swingHighs, activeStructureHighIdx)
+        invLow  = array.get(swingLows,  activeStructureLowIdx)
+        if not (invLow.level < invHigh.level)
+            invariantOk := false
+            upperBreak := false
+            lowerBreak := false
+
+    if invariantOk and upperBreak and lowerBreak
+        lastDiagnostic := "dual_break@" + str.tostring(bar_index)
+        upperBreak := false
+        lowerBreak := false
+    int   structureEventDirection = 0
+    string structureEventText     = ""
+    float structureSourceLevel    = float(na)
+
+    if upperBreak
+        int priorTrend = structureTrend
+        structureEventDirection := 1
+        if priorTrend == -1
+            chochSignal := 1
+            structureEventText := "CHoCH↑"
+        else
+            bosSignal := 1
+            structureEventText := "BOS↑"
+        structureTrend := 1
+        nextStructureId += 1
+        if priorTrend == -1
+            lastBullChoChId := nextStructureId
+        else
+            lastBullBosId := nextStructureId
+        brokenSource = array.get(swingHighs, activeStructureHighIdx)
+        brokenSource.consumed := true
+        array.set(swingHighs, activeStructureHighIdx, brokenSource)
+        structureSourceLevel := brokenSource.level
+        log.info("SMC " + structureEventText + " @ " + str.tostring(bar_index) + " level=" + str.tostring(structureSourceLevel, format.mintick) + " id=" + str.tostring(nextStructureId))
+    else if lowerBreak
+        int priorTrend = structureTrend
+        structureEventDirection := -1
+        if priorTrend == 1
+            chochSignal := -1
+            structureEventText := "CHoCH↓"
+        else
+            bosSignal := -1
+            structureEventText := "BOS↓"
+        structureTrend := -1
+        nextStructureId += 1
+        if priorTrend == 1
+            lastBearChoChId := nextStructureId
+        else
+            lastBearBosId := nextStructureId
+        brokenSource = array.get(swingLows, activeStructureLowIdx)
+        brokenSource.consumed := true
+        array.set(swingLows, activeStructureLowIdx, brokenSource)
+        structureSourceLevel := brokenSource.level
+        log.info("SMC " + structureEventText + " @ " + str.tostring(bar_index) + " level=" + str.tostring(structureSourceLevel, format.mintick) + " id=" + str.tostring(nextStructureId))
+
+    if structureEventDirection != 0
+        brokenLevel := structureSourceLevel
+        lastStructureText := structureEventText + " @ " + str.tostring(structureSourceLevel, format.mintick)
+        if showStructureEffective
+            structureLabel = f_make_structure_label(structureEventDirection, structureEventText)
+            f_track_label(labelQueue, structureLabel, labelBudget)
+
+//==============================================================================
+// Sweep evaluation
+//==============================================================================
+if barstate.isconfirmed
+    bool atrReady      = not na(atr)
+    bool sweepBull     = false
+    bool sweepBullClean = false
+    bool sweepBear     = false
+    bool sweepBearClean = false
+    if atrReady and activeSweepLowIdx >= 0 and activeSweepLowIdx < array.size(sweepLows)
+        sweepLow = array.get(sweepLows, activeSweepLowIdx)
+        sweepBull      := not sweepLow.consumed and low < sweepLow.level and low <= sweepLow.level - atr * sweepBufferAtr and close > sweepLow.level
+        sweepBullClean := not sweepLow.consumed and low < sweepLow.level and low <= sweepLow.level - atr * rulebookCleanSweepAtr and close > sweepLow.level
+    if atrReady and activeSweepHighIdx >= 0 and activeSweepHighIdx < array.size(sweepHighs)
+        sweepHigh = array.get(sweepHighs, activeSweepHighIdx)
+        sweepBear      := not sweepHigh.consumed and high > sweepHigh.level and high >= sweepHigh.level + atr * sweepBufferAtr and close < sweepHigh.level
+        sweepBearClean := not sweepHigh.consumed and high > sweepHigh.level and high >= sweepHigh.level + atr * rulebookCleanSweepAtr and close < sweepHigh.level
+
+    if sweepBull and sweepBear
+        lastDiagnostic := "dual_sided_sweep@" + str.tostring(bar_index)
+        if activeSweepLowIdx >= 0 and activeSweepLowIdx < array.size(sweepLows)
+            lowSweepRef = array.get(sweepLows, activeSweepLowIdx)
+            lowSweepRef.consumed := true
+            array.set(sweepLows, activeSweepLowIdx, lowSweepRef)
+        if activeSweepHighIdx >= 0 and activeSweepHighIdx < array.size(sweepHighs)
+            highSweepRef = array.get(sweepHighs, activeSweepHighIdx)
+            highSweepRef.consumed := true
+            array.set(sweepHighs, activeSweepHighIdx, highSweepRef)
+    else if sweepBull and activeSweepLowIdx >= 0 and activeSweepLowIdx < array.size(sweepLows)
+        lowSweepRef = array.get(sweepLows, activeSweepLowIdx)
+        lowSweepRef.consumed := true
+        array.set(sweepLows, activeSweepLowIdx, lowSweepRef)
+        if sweepBullClean
+            lastCleanSweepBar   := bar_index
+            lastCleanSweepDir   := 1
+            lastCleanSweepLevel := lowSweepRef.level
+            log.info("SMC clean_sweep @ " + str.tostring(bar_index) + " side=bull level=" + str.tostring(lowSweepRef.level, format.mintick))
+        if showSweepsEffective
+            sweepLabel = f_make_sweep_label(1)
+            f_track_label(labelQueue, sweepLabel, labelBudget)
+    else if sweepBear and activeSweepHighIdx >= 0 and activeSweepHighIdx < array.size(sweepHighs)
+        highSweepRef = array.get(sweepHighs, activeSweepHighIdx)
+        highSweepRef.consumed := true
+        array.set(sweepHighs, activeSweepHighIdx, highSweepRef)
+        lastSweepText := "bearish sweep @ " + str.tostring(highSweepRef.level, format.mintick)
+        if sweepBearClean
+            lastCleanSweepBar   := bar_index
+            lastCleanSweepDir   := -1
+            lastCleanSweepLevel := highSweepRef.level
+            log.info("SMC clean_sweep @ " + str.tostring(bar_index) + " side=bear level=" + str.tostring(highSweepRef.level, format.mintick))
+        if showSweepsEffective
+            sweepLabel = f_make_sweep_label(-1)
+            f_track_label(labelQueue, sweepLabel, labelBudget)
+//==============================================================================
+// Session filter (compute once per bar before pipeline)
+//==============================================================================
+int   _nyHour   = hour(time, "America/New_York")
+int   _nyMinute = minute(time, "America/New_York")
+bool  _isLondon   = _nyHour >= 2 and _nyHour < 5
+bool  _isNewYork  = _nyHour >= 7 and _nyHour < 10
+bool  _inSession  = _isLondon or _isNewYork
+bool  _londonBlock = _isLondon and _nyHour == 2 and _nyMinute < 15
+bool  sessionAllowed = _inSession and not _londonBlock
+
+//==============================================================================
+// Order block lifecycle
+//==============================================================================
+if barstate.isconfirmed
+    int bullObCount = array.size(bullishObs)
+    if bullObCount > 0
+        for i = 0 to bullObCount - 1
+            OrderBlockZone zone = array.get(bullishObs, i)
+            if not zone.dead
+                if bar_index - zone.activationIndex >= obExpiryBars
+                    zone.dead := true
+                    zone.expiryIndex := bar_index
+                else if bar_index > zone.activationIndex
+                    if not zone.touched and low <= zone.top
+                        zone.touched := true
+                        zone.firstTouchIndex := bar_index
+                    if close < zone.bottom
+                        zone.dead := true
+                        zone.invalidationIndex := bar_index
+                if not na(zone.zoneBox)
+                    box.set_right(zone.zoneBox, bar_index)
+                    if zone.dead
+                        box.set_bgcolor(zone.zoneBox, f_zone_fill(zone.direction, true))
+                        box.set_border_color(zone.zoneBox, f_zone_border(zone.direction, true))
+                array.set(bullishObs, i, zone)
+
+    int bearObCount = array.size(bearishObs)
+    if bearObCount > 0
+        for i = 0 to bearObCount - 1
+            OrderBlockZone zone = array.get(bearishObs, i)
+            if not zone.dead
+                if bar_index - zone.activationIndex >= obExpiryBars
+                    zone.dead := true
+                    zone.expiryIndex := bar_index
+                else if bar_index > zone.activationIndex
+                    if not zone.touched and high >= zone.bottom
+                        zone.touched := true
+                        zone.firstTouchIndex := bar_index
+                    if close > zone.top
+                        zone.dead := true
+                        zone.invalidationIndex := bar_index
+                if not na(zone.zoneBox)
+                    box.set_right(zone.zoneBox, bar_index)
+                    if zone.dead
+                        box.set_bgcolor(zone.zoneBox, f_zone_fill(zone.direction, true))
+                        box.set_border_color(zone.zoneBox, f_zone_border(zone.direction, true))
+                array.set(bearishObs, i, zone)
+
+//==============================================================================
+// BOS-driven order block activation
+//==============================================================================
+if barstate.isconfirmed and bosSignal != 0
+    int direction = bosSignal
+    bool expansionNearBreak = expansionQualified or (expansionQualified[1] == true)
+    if expansionNearBreak
+        int originBar = f_find_ob_origin(direction, bar_index, obLookback)
+        if originBar >= 0
+            int   originOffset = bar_index - originBar
+            float zoneTop      = high[originOffset]
+            float zoneBottom   = low[originOffset]
+            if direction == 1
+                while f_count_live_obs(bullishObs) >= obCapPerSide
+                    int expiredId = f_expire_oldest_live_ob(bullishObs, bar_index)
+                    if expiredId >= 0
+                        lastDiagnostic := "ob_cap_expiry#" + str.tostring(expiredId)
+                box drawBox = showOrderBlocksEffective ? box.new(originBar, zoneTop, bar_index, zoneBottom, xloc=xloc.bar_index, bgcolor=f_zone_fill(direction, false), border_color=f_zone_border(direction, false)) : na
+                if showOrderBlocksEffective and not na(drawBox)
+                    f_track_box(boxQueue, drawBox, boxBudget)
+                OrderBlockZone newZone = OrderBlockZone.new(nextObId, direction, originBar, bar_index, zoneTop, zoneBottom, bar_index, false, false, na, na, na, drawBox, lastBullBosId)
+                array.push(bullishObs, newZone)
+            else
+                while f_count_live_obs(bearishObs) >= obCapPerSide
+                    int expiredId = f_expire_oldest_live_ob(bearishObs, bar_index)
+                    if expiredId >= 0
+                        lastDiagnostic := "ob_cap_expiry#" + str.tostring(expiredId)
+                box drawBox = showOrderBlocksEffective ? box.new(originBar, zoneTop, bar_index, zoneBottom, xloc=xloc.bar_index, bgcolor=f_zone_fill(direction, false), border_color=f_zone_border(direction, false)) : na
+                if showOrderBlocksEffective and not na(drawBox)
+                    f_track_box(boxQueue, drawBox, boxBudget)
+                OrderBlockZone newZone = OrderBlockZone.new(nextObId, direction, originBar, bar_index, zoneTop, zoneBottom, bar_index, false, false, na, na, na, drawBox, lastBearBosId)
+                array.push(bearishObs, newZone)
+            lastObText := (direction == 1 ? "bullish" : "bearish") + " OB @ " + str.tostring(zoneBottom, format.mintick) + " - " + str.tostring(zoneTop, format.mintick)
+            log.info("SMC ob_activated @ " + str.tostring(bar_index) + " id=" + str.tostring(nextObId) + " dir=" + (direction == 1 ? "bull" : "bear") + " zone=[" + str.tostring(zoneBottom, format.mintick) + "," + str.tostring(zoneTop, format.mintick) + "]")
+        lastDiagnostic := "skip_ob_no_expansion@" + str.tostring(bar_index)
+
+//==============================================================================
+// Three-candle FVG detection
+//==============================================================================
+if barstate.isconfirmed and bar_index >= 2
+    bool bullGap = high[2] < low
+    bool bearGap = low[2] > high
+    if bullGap
+        while f_count_live_fvgs(bullishFvgs) >= fvgCapPerSide
+            int expiredId = f_expire_oldest_live_fvg(bullishFvgs, bar_index)
+            if expiredId >= 0
+                lastDiagnostic := "fvg_cap_expiry#" + str.tostring(expiredId)
+        float topPrice    = low
+        float bottomPrice = high[2]
+        box drawBox = showFvgsEffective ? box.new(bar_index - 1, topPrice, bar_index, bottomPrice, xloc=xloc.bar_index, bgcolor=f_zone_fill(1, false), border_color=f_zone_border(1, false)) : na
+        if showFvgsEffective and not na(drawBox)
+            f_track_box(boxQueue, drawBox, boxBudget)
+        FairValueGapZone newGap = FairValueGapZone.new(nextFvgId, 1, bar_index - 1, bar_index, topPrice, bottomPrice, false, false, na, na, na, drawBox)
+        array.push(bullishFvgs, newGap)
+        lastFvgText := "bullish FVG @ " + str.tostring(bottomPrice, format.mintick) + " - " + str.tostring(topPrice, format.mintick)
+        nextFvgId += 1
+    else if bearGap
+        while f_count_live_fvgs(bearishFvgs) >= fvgCapPerSide
+            int expiredId = f_expire_oldest_live_fvg(bearishFvgs, bar_index)
+            if expiredId >= 0
+                lastDiagnostic := "fvg_cap_expiry#" + str.tostring(expiredId)
+        float topPrice    = low[2]
+        float bottomPrice = high
+        box drawBox = showFvgsEffective ? box.new(bar_index - 1, topPrice, bar_index, bottomPrice, xloc=xloc.bar_index, bgcolor=f_zone_fill(-1, false), border_color=f_zone_border(-1, false)) : na
+        if showFvgsEffective and not na(drawBox)
+            f_track_box(boxQueue, drawBox, boxBudget)
+        FairValueGapZone newGap = FairValueGapZone.new(nextFvgId, -1, bar_index - 1, bar_index, topPrice, bottomPrice, false, false, na, na, na, drawBox)
+        array.push(bearishFvgs, newGap)
+        lastFvgText := "bearish FVG @ " + str.tostring(bottomPrice, format.mintick) + " - " + str.tostring(topPrice, format.mintick)
+        nextFvgId += 1
+
+//==============================================================================
+// FVG lifecycle
+//==============================================================================
+if barstate.isconfirmed
+    int bullFvgCount = array.size(bullishFvgs)
+    if bullFvgCount > 0
+        for i = 0 to bullFvgCount - 1
+            FairValueGapZone zone = array.get(bullishFvgs, i)
+            if not zone.dead
+                if bar_index > zone.activationIndex
+                    if not zone.touched and low <= zone.top
+                        zone.touched := true
+                        zone.firstTouchIndex := bar_index
+                    if low <= zone.bottom
+                        zone.dead := true
+                        zone.fillIndex := bar_index
+                if not zone.dead and bar_index - zone.activationIndex >= fvgExpiryBars
+                    zone.dead := true
+                    zone.expiryIndex := bar_index
+                if not na(zone.zoneBox)
+                    box.set_right(zone.zoneBox, bar_index)
+                    if zone.dead
+                        box.set_bgcolor(zone.zoneBox, f_zone_fill(zone.direction, true))
+                        box.set_border_color(zone.zoneBox, f_zone_border(zone.direction, true))
+                array.set(bullishFvgs, i, zone)
+
+    int bearFvgCount = array.size(bearishFvgs)
+    if bearFvgCount > 0
+        for i = 0 to bearFvgCount - 1
+            FairValueGapZone zone = array.get(bearishFvgs, i)
+            if not zone.dead
+                if bar_index > zone.activationIndex
+                    if not zone.touched and high >= zone.bottom
+                        zone.touched := true
+                        zone.firstTouchIndex := bar_index
+                    if high >= zone.top
+                        zone.dead := true
+                        zone.fillIndex := bar_index
+                if not zone.dead and bar_index - zone.activationIndex >= fvgExpiryBars
+                    zone.dead := true
+                    zone.expiryIndex := bar_index
+                if not na(zone.zoneBox)
+                    box.set_right(zone.zoneBox, bar_index)
+                    if zone.dead
+                        box.set_bgcolor(zone.zoneBox, f_zone_fill(zone.direction, true))
+                        box.set_border_color(zone.zoneBox, f_zone_border(zone.direction, true))
+                array.set(bearishFvgs, i, zone)
+
+//==============================================================================
+// Liquidity pool sweep scan
+//==============================================================================
+if barstate.isconfirmed
+    int highCount = array.size(highPools)
+    if highCount > 0
+        for p = 0 to highCount - 1
+            LiquidityPool draft = array.get(highPools, p)
+            if draft.activationIndex >= 0 and draft.sweepIndex < 0 and bar_index > draft.activationIndex and high > draft.levelMax and close < draft.levelMax
+                draft.sweepIndex := bar_index
+                draft.sweepLevel := draft.levelMax
+                draft.swept := true
+                if not na(draft.poolBox)
+                    box.set_right(draft.poolBox, bar_index)
+                    box.set_bgcolor(draft.poolBox, f_pool_box_color(1, true))
+                    box.set_border_color(draft.poolBox, f_pool_border_color(1, true))
+                    log.info("SMC pool_swept @ " + str.tostring(bar_index) + " side=high level=" + str.tostring(draft.levelMean, format.mintick))
+    int lowCount = array.size(lowPools)
+    if lowCount > 0
+        for p = 0 to lowCount - 1
+            LiquidityPool draft = array.get(lowPools, p)
+            if draft.activationIndex >= 0 and draft.sweepIndex < 0 and bar_index > draft.activationIndex and low < draft.levelMin and close > draft.levelMin
+                draft.sweepIndex := bar_index
+                draft.sweepLevel := draft.levelMin
+                draft.swept := true
+                if not na(draft.poolBox)
+                    box.set_right(draft.poolBox, bar_index)
+                    box.set_bgcolor(draft.poolBox, f_pool_box_color(-1, true))
+                    box.set_border_color(draft.poolBox, f_pool_border_color(-1, true))
+                    log.info("SMC pool_swept @ " + str.tostring(bar_index) + " side=low level=" + str.tostring(draft.levelMean, format.mintick))
+
+//==============================================================================
+// HTF confirmed-bar requests
+//==============================================================================
+[dTrendRaw, dH] = request.security(syminfo.tickerid, "240",
+    [structureTrend[1] == 1 ? 1 : structureTrend[1] == -1 ? -1 : 0, ta.pivothigh(high, 5, 5)[1]],
+    lookahead=barmerge.lookahead_on)
+[dL, h4TrendRaw] = request.security(syminfo.tickerid, "240",
+    [ta.pivotlow(low, 5, 5)[1], htfH4Trend[1] == 1 ? 1 : htfH4Trend[1] == -1 ? -1 : 0],
+    lookahead=barmerge.lookahead_on)
+[h4H, h4L] = request.security(syminfo.tickerid, "240",
+    [ta.pivothigh(high, 5, 5)[1], ta.pivotlow(low, 5, 5)[1]],
+    lookahead=barmerge.lookahead_on)
+[h4RHigh, h4RLow] = request.security(syminfo.tickerid, "240",
+    [ta.highest(high, 16)[1], ta.lowest(low, 16)[1]],
+    lookahead=barmerge.lookahead_on)
+if barstate.isconfirmed
+    if htfDailyEnabled
+        htfDTrend := dTrendRaw
+    if htfH4Enabled
+        htfH4Trend       := h4TrendRaw
+        htfH4RangeHigh   := h4RHigh
+        htfH4RangeLow    := h4RLow
+        htfH4Equilibrium := na(h4RHigh) or na(h4RLow) ? na : (h4RHigh + h4RLow) * 0.5
+    if not na(dH)
+        htfDLastHighIdx := bar_index
+    if not na(dL)
+        htfDLastLowIdx := bar_index
+    if not na(h4H)
+        htfH4LastHighIdx := bar_index
+    if not na(h4L)
+        htfH4LastLowIdx := bar_index
+
+//==============================================================================
+// Context bias and premium/discount
+//==============================================================================
+string biasText = structureTrend == 1 ? "bull" : structureTrend == -1 ? "bear" : "neutral"
+string pdZone  = "neutral"
+float equilibrium = na
+if htfH4Enabled and not na(htfH4Equilibrium)
+    equilibrium := htfH4Equilibrium
+    if close > htfH4Equilibrium
+        pdZone := "premium"
+    else if close < htfH4Equilibrium
+        pdZone := "discount"
+else if not na(displaySwingHigh) and not na(displaySwingLow) and displaySwingLow < displaySwingHigh
+    equilibrium := (displaySwingHigh + displaySwingLow) * 0.5
+    if close > equilibrium
+        pdZone := "premium"
+    else if close < equilibrium
+        pdZone := "discount"
+
+//==============================================================================
+// Swing confirmation and pool matching
+//==============================================================================
+if barstate.isconfirmed and bar_index >= swingWindow * 2
+    int   candidateOffset = swingWindow
+    int   candidateBar    = bar_index - candidateOffset
+    float candidateHigh   = high[candidateOffset]
+    float candidateLow    = low[candidateOffset]
+    float leftHighMax     = na
+    float rightHighMax    = na
+    float leftLowMin      = na
+    float rightLowMin     = na
+    for j = 1 to swingWindow
+        leftHighMax  := na(leftHighMax)  ? high[candidateOffset + j] : math.max(leftHighMax,  high[candidateOffset + j])
+        rightHighMax := na(rightHighMax) ? high[candidateOffset - j] : math.max(rightHighMax, high[candidateOffset - j])
+        leftLowMin   := na(leftLowMin)   ? low[candidateOffset + j]  : math.min(leftLowMin,   low[candidateOffset + j])
+        rightLowMin  := na(rightLowMin)  ? low[candidateOffset - j]  : math.min(rightLowMin,  low[candidateOffset - j])
+    bool isSwingHigh = candidateHigh > leftHighMax and candidateHigh >= rightHighMax
+    bool isSwingLow  = candidateLow  < leftLowMin  and candidateLow  <= rightLowMin
+
+    if isSwingHigh
+        SwingLevel newSwing = SwingLevel.new(nextSwingId, 1, candidateHigh, candidateBar, bar_index, false)
+        array.push(swingHighs, newSwing)
+        array.push(sweepHighs, newSwing)
+        activeStructureHighIdx := array.size(swingHighs) - 1
+        activeSweepHighIdx     := array.size(sweepHighs) - 1
+        displaySwingHigh       := candidateHigh
+        displaySwingDirection  := 1
+        if showSwingsEffective
+            label swingLabel = f_make_swing_label(1, candidateBar, candidateHigh)
+            f_track_label(labelQueue, swingLabel, labelBudget)
+        nextSwingId += 1
+        if not na(atr) and atr > 0
+            float tolerance = atr * poolToleranceAtr
+            int   bestIdx   = -1
+            float bestDist  = tolerance
+            int   poolCount = array.size(highPools)
+            if poolCount > 0
+                for p = 0 to poolCount - 1
+                    LiquidityPool draft = array.get(highPools, p)
+                    if draft.sweepIndex < 0
+                        float distance = math.abs(candidateHigh - draft.levelMean)
+                        if distance <= bestDist
+                            bestIdx  := p
+                            bestDist := distance
+            if bestIdx >= 0
+                LiquidityPool draft = array.get(highPools, bestIdx)
+                int memberCount = 1
+                if str.length(draft.memberIds) > 0
+                    memberCount := array.size(str.split(draft.memberIds, "|")) + 1
+                draft.memberIds   := f_member_ids_str(draft.memberIds, nextSwingId - 1)
+                draft.memberLevels := f_member_levels_str(draft.memberLevels, candidateHigh)
+                float newMean = draft.levelMean + (candidateHigh - draft.levelMean) / memberCount
+                draft.levelMean := newMean
+                draft.levelMin  := math.min(draft.levelMin,  candidateHigh)
+                draft.levelMax  := math.max(draft.levelMax,  candidateHigh)
+                if memberCount == poolMinMembers and draft.activationIndex < 0
+                    draft.activationIndex  := bar_index
+                    draft.lastScannedIndex := bar_index
+                    box drawBox = showPoolsEffective ? box.new(bar_index, draft.levelMax, bar_index, draft.levelMin, xloc=xloc.bar_index, bgcolor=f_pool_box_color(1, false), border_color=f_pool_border_color(1, false), border_width=1) : na
+                    draft.poolBox := drawBox
+                    if not na(drawBox)
+                        f_track_box(poolBoxQueue, drawBox, boxBudget)
+                    lastPoolText := "EQH activated @ " + str.tostring(draft.levelMean, format.mintick)
+                    log.info("SMC pool_activated @ " + str.tostring(bar_index) + " side=high level=" + str.tostring(draft.levelMean, format.mintick) + " members=" + draft.memberIds)
+                array.set(highPools, bestIdx, draft)
+            else
+                LiquidityPool newPool = LiquidityPool.new(nextPoolId, 1, -1, -1, candidateHigh, candidateHigh, candidateHigh, str.tostring(nextSwingId - 1), str.tostring(candidateHigh, format.mintick), -1, float(na), false, na)
+                array.push(highPools, newPool)
+                nextPoolId += 1
+
+    if isSwingLow
+        SwingLevel newSwing = SwingLevel.new(nextSwingId, -1, candidateLow, candidateBar, bar_index, false)
+        array.push(swingLows, newSwing)
+        array.push(sweepLows, newSwing)
+        activeStructureLowIdx := array.size(swingLows) - 1
+        activeSweepLowIdx     := array.size(sweepLows) - 1
+        displaySwingLow       := candidateLow
+        displaySwingDirection  := -1
+        if showSwingsEffective
+            label swingLabel = f_make_swing_label(-1, candidateBar, candidateLow)
+            f_track_label(labelQueue, swingLabel, labelBudget)
+        nextSwingId += 1
+        if not na(atr) and atr > 0
+            float tolerance = atr * poolToleranceAtr
+            int   bestIdx   = -1
+            float bestDist  = tolerance
+            int   poolCount = array.size(lowPools)
+            if poolCount > 0
+                for p = 0 to poolCount - 1
+                    LiquidityPool draft = array.get(lowPools, p)
+                    if draft.sweepIndex < 0
+                        float distance = math.abs(candidateLow - draft.levelMean)
+                        if distance <= bestDist
+                            bestIdx  := p
+                            bestDist := distance
+            if bestIdx >= 0
+                LiquidityPool draft = array.get(lowPools, bestIdx)
+                int memberCount = 1
+                if str.length(draft.memberIds) > 0
+                    memberCount := array.size(str.split(draft.memberIds, "|")) + 1
+                draft.memberIds   := f_member_ids_str(draft.memberIds, nextSwingId - 1)
+                draft.memberLevels := f_member_levels_str(draft.memberLevels, candidateLow)
+                float newMean = draft.levelMean + (candidateLow - draft.levelMean) / memberCount
+                draft.levelMean := newMean
+                draft.levelMin  := math.min(draft.levelMin,  candidateLow)
+                draft.levelMax  := math.max(draft.levelMax,  candidateLow)
+                if memberCount == poolMinMembers and draft.activationIndex < 0
+                    draft.activationIndex  := bar_index
+                    draft.lastScannedIndex := bar_index
+                    box drawBox = showPoolsEffective ? box.new(bar_index, draft.levelMax, bar_index, draft.levelMin, xloc=xloc.bar_index, bgcolor=f_pool_box_color(-1, false), border_color=f_pool_border_color(-1, false), border_width=1) : na
+                    draft.poolBox := drawBox
+                    if not na(drawBox)
+                        f_track_box(poolBoxQueue, drawBox, boxBudget)
+                    lastPoolText := "EQL activated @ " + str.tostring(draft.levelMean, format.mintick)
+                    log.info("SMC pool_activated @ " + str.tostring(bar_index) + " side=low level=" + str.tostring(draft.levelMean, format.mintick) + " members=" + draft.memberIds)
+                array.set(lowPools, bestIdx, draft)
+            else
+                LiquidityPool newPool = LiquidityPool.new(nextPoolId, -1, -1, -1, candidateLow, candidateLow, candidateLow, str.tostring(nextSwingId - 1), str.tostring(candidateLow, format.mintick), -1, float(na), false, na)
+                array.push(lowPools, newPool)
+                nextPoolId += 1
+
+//==============================================================================
+// Rulebook 8W candidate pipeline
+//==============================================================================
+if barstate.isconfirmed and not na(atr) and atr > 0
+    int   bestObId         = -1
+    int   bestObDir        = 0
+    float bestObTop        = float(na)
+    float bestObBottom     = float(na)
+    int   bestObActivation = -1
+    float bestScore        = -1.0
+    float bestEdgeDist     = 1e18
+    string bestReason     = "no-signal"
+    int   bestBosId        = -1
+    float bestProximity    = 1e18
+
+    int obCount0 = array.size(bullishObs)
+    if obCount0 > 0
+        for i = 0 to obCount0 - 1
+            OrderBlockZone zone = array.get(bullishObs, i)
+            int dirSign = 1
+            if zone.dead
+                continue
+            if zone.linkedBosId < 0
+                continue
+            if htfDailyEnabled and (htfDTrend == 0 or htfDTrend != dirSign)
+                continue
+            if htfH4Enabled and (htfH4Trend == 0 or htfH4Trend != dirSign)
+                continue
+            if dirSign != structureTrend
+                continue
+            if zone.touched
+                continue
+            if lastBullChoChId > zone.linkedBosId
+                continue
+            if not sessionAllowed
+                continue
+            float obTop      = zone.top
+            float obBottom   = zone.bottom
+            float entryPrice = obTop
+            float proximity  = math.abs(close - entryPrice)
+            if proximity > rulebookEntryProximityAtr * atr
+                continue
+            float slPrice = obBottom - atr * rulebookSlEdgeAtr
+            float slDist  = math.abs(entryPrice - slPrice)
+            if slDist > rulebookSlMaxAtr * atr
+                continue
+            if slDist < rulebookSlMinAtr * atr
+                continue    
+            float targetPrice = entryPrice + rulebookMinRR * slDist
+            bool wallHit = false
+            if not na(htfH4RangeHigh) and targetPrice >= htfH4RangeHigh
+                wallHit := true
+            if wallHit
+                continue
+            float score = 0.0
+            if expansionQualified
+                score += 1.0
+            if dirSign == structureTrend
+                score += 1.0
+            if not zone.touched
+                score += 1.0
+            bool sweepCleanMatch = (lastCleanSweepDir == dirSign and (bar_index - lastCleanSweepBar) <= obExpiryBars)
+            if sweepCleanMatch
+                score += 1.0
+            if pdZone == "discount"
+                score += 1.0
+            if score < rulebookScoreThreshold
+                continue
+            int activationPos = zone.activationIndex
+            if activationPos > bestObActivation or (activationPos == bestObActivation and proximity < bestProximity) or (activationPos == bestObActivation and proximity == bestProximity and zone.id < bestObId)
+                bestObId         := zone.id
+                bestObDir        := dirSign
+                bestObTop        := obTop
+                bestObBottom     := obBottom
+                bestObActivation := activationPos
+                bestScore        := score
+                bestEdgeDist     := proximity
+                bestBosId        := zone.linkedBosId
+                bestProximity    := proximity
+                bestReason       := "ok"
+
+    int obCount1 = array.size(bearishObs)
+    if obCount1 > 0
+        for i = 0 to obCount1 - 1
+            OrderBlockZone zone = array.get(bearishObs, i)
+            int dirSign = -1
+            if zone.dead
+                continue
+            if zone.linkedBosId < 0
+                continue
+            if htfDailyEnabled and (htfDTrend == 0 or htfDTrend != dirSign)
+                continue
+            if htfH4Enabled and (htfH4Trend == 0 or htfH4Trend != dirSign)
+                continue
+            if dirSign != structureTrend
+                continue
+            if zone.touched
+                continue
+            if lastBearChoChId > zone.linkedBosId
+                continue
+            if not sessionAllowed
+                continue
+            float obTop      = zone.top
+            float obBottom   = zone.bottom
+            float entryPrice = obBottom
+            float proximity  = math.abs(close - entryPrice)
+            if proximity > rulebookEntryProximityAtr * atr
+                continue
+            float slPrice = obTop + atr * rulebookSlEdgeAtr
+            float slDist  = math.abs(entryPrice - slPrice)
+            if slDist > rulebookSlMaxAtr * atr
+                continue
+            if slDist < rulebookSlMinAtr * atr
+                continue    
+            float targetPrice = entryPrice - rulebookMinRR * slDist
+            bool wallHit = false
+            if not na(htfH4RangeLow) and targetPrice <= htfH4RangeLow
+                wallHit := true
+            if wallHit
+                continue
+            float score = 0.0
+            if expansionQualified
+                score += 1.0
+            if dirSign == structureTrend
+                score += 1.0
+            if not zone.touched
+                score += 1.0
+            bool sweepCleanMatch = (lastCleanSweepDir == dirSign and (bar_index - lastCleanSweepBar) <= obExpiryBars)
+            if sweepCleanMatch
+                score += 1.0
+            if pdZone == "premium"
+                score += 1.0
+            if score < rulebookScoreThreshold
+                continue
+            int activationPos = zone.activationIndex
+            if activationPos > bestObActivation or (activationPos == bestObActivation and proximity < bestProximity) or (activationPos == bestObActivation and proximity == bestProximity and zone.id < bestObId)
+                bestObId         := zone.id
+                bestObDir        := dirSign
+                bestObTop        := obTop
+                bestObBottom     := obBottom
+                bestObActivation := activationPos
+                bestScore        := score
+                bestEdgeDist     := proximity
+                bestBosId        := zone.linkedBosId
+                bestProximity    := proximity
+                bestReason       := "ok"
+
+    if bestObId >= 0
+        float entry      = bestObDir == 1 ? bestObTop : bestObBottom
+        float slEdge     = bestObDir == 1 ? bestObBottom - atr * rulebookSlEdgeAtr : bestObTop + atr * rulebookSlEdgeAtr
+        float slDistance = math.abs(entry - slEdge)
+        float target     = bestObDir == 1 ? entry + rulebookMinRR * slDistance : entry - rulebookMinRR * slDistance
+        
+        
+        // Scale-in 2R/4R levels (Design A: 2R trigger + 4R final TP).
+        // Mirrors src/scale_in_exit.py: scale_in_r=2.0, final_tp_r=4.0.
+        // scaleInLeg2Tp1R <= 2.0 disables Design B intermediate TP (only 2R+4R drawn).
+        if useScaleInMode
+            scaleInTrigger := bestObDir == 1 ? entry + 2.0 * slDistance : entry - 2.0 * slDistance
+            finalTp        := bestObDir == 1 ? entry + 4.0 * slDistance : entry - 4.0 * slDistance
+    
+        // Trade label - shows entry, SL, 2R, 4R levels on chart
+        // Only fires on NEW chart-qualified setup (bestObId changed)
+        if manualGatesAllOk and bestObId != bestObId[1]
+            string sideText = bestObDir == 1 ? "LONG" : "SHORT"
+            color  sideColor = bestObDir == 1 ? color.new(color.lime, 30) : color.new(color.red, 30)
+            string labelText = sideText + " @ " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(slEdge, format.mintick) + "\n+2R " + str.tostring(scaleInTrigger, format.mintick) + "\n+4R " + str.tostring(finalTp, format.mintick)
+            float labelY = bestObDir == 1 ? high : low
+            label.new(bar_index, labelY, labelText, xloc=xloc.bar_index, style=label.style_label_down, textcolor=color.white, color=sideColor, size=size.small)    
+
+        if manualGatesAllOk
+            rulebookState := "chart-qualified"
+            log.info("SMC chart_qualified @ " + str.tostring(bar_index) + " ob_id=" + str.tostring(bestObId) + " dir=" + str.tostring(bestObDir) + " score=" + str.tostring(bestScore))
+        else if manualGatesUnknown
+            rulebookState := "watch"
+        else
+            rulebookState := "blocked"
+            log.info("SMC blocked @ " + str.tostring(bar_index) + " ob_id=" + str.tostring(bestObId) + " reason=" + bestReason)
+        rulebookScore        := bestScore
+        rulebookObId         := bestObId
+        rulebookObDir        := bestObDir
+        rulebookObTop        := bestObTop
+        rulebookObBottom     := bestObBottom
+        rulebookObActivation := bestObActivation
+        rulebookEntry        := entry
+        rulebookStop         := slEdge
+        rulebookTarget       := target
+        if low <= bestObTop and high >= bestObBottom
+            rulebookTouchBar := bar_index
+    else
+        rulebookObId         := -1
+        rulebookObDir        := 0
+        rulebookObTop        := float(na)
+        rulebookObBottom     := float(na)
+        rulebookObActivation := -1
+        rulebookEntry        := float(na)
+        rulebookStop         := float(na)
+        rulebookTarget       := float(na)
+        rulebookScore        := 0.0
+        rulebookRejection    := "no-qualifying-ob"
+
+        if manualGatesAllOk
+            rulebookState := "no-signal"
+        else if manualGatesUnknown
+            rulebookState := "watch"
+        else
+            rulebookState := "blocked"
+//==============================================================================
+// Minimal plots and audit outputs
+//==============================================================================
+// Range/body ATR plots removed - they distort Y-axis (ATR ~0.001 vs price ~1.16)
+// Displacement marker "D" alone is sufficient visual feedback
+plot(showSwingsEffective and not na(equilibrium) ? equilibrium : na, "Equilibrium", color=color.new(color.gray, 60), linewidth=1, style=plot.style_linebr)
+plot(showSwingsEffective ? displaySwingHigh : na, "Last swing high", color=color.new(color.orange, 70), linewidth=1, style=plot.style_linebr)
+plot(showSwingsEffective ? displaySwingLow  : na, "Last swing low",  color=color.new(color.aqua, 70), linewidth=1, style=plot.style_linebr)
+plotshape(showStructureEffective and bosSignal == 1,  "Bull BOS",  shape.triangleup,   location.abovebar, color=color.lime, size=size.tiny, text="BOS")
+plotshape(showStructureEffective and bosSignal == -1, "Bear BOS",  shape.triangledown, location.belowbar, color=color.red,  size=size.tiny, text="BOS")
+plotshape(showStructureEffective and chochSignal == 1,  "Bull CHoCH", shape.circle, location.abovebar, color=color.new(color.lime, 0), size=size.tiny, text="C")
+plotshape(showStructureEffective and chochSignal == -1, "Bear CHoCH", shape.circle, location.belowbar, color=color.new(color.red, 0), size=size.tiny, text="C")
+plotchar(showDisplacement and expansionQualified ? high : na, "Qualified displacement", "D", location.abovebar, color=color.new(color.yellow, 0), size=size.tiny)
+
+// Scale-in TP lines: only drawn when useScaleInMode is on AND an OB is currently active.
+// Linebr style: line extends forward from current bar until next setup replaces it.
+// When OB dies/invalidates, scaleInTrigger/finalTp become na and the line disappears.
+//plot(useScaleInMode and showScaleInLines ? scaleInTrigger : na, "Scale-in 2R trigger", color=color.new(color.teal, 0), linewidth=2, style=plot.style_linebr)
+//plot(useScaleInMode and showScaleInLines ? finalTp : na, "Scale-in 4R final TP", color=color.new(color.fuchsia, 0), linewidth=2, style=plot.style_linebr)
+//plot(useScaleInMode and showScaleInLines ? scaleInTrigger : na, "Scale-in 2R trigger", color=color.new(color.teal, 0), linewidth=2, style=plot.style_stepline_diamond)
+//plot(useScaleInMode and showScaleInLines ? finalTp : na, "Scale-in 4R final TP", color=color.new(color.fuchsia, 0), linewidth=2, style=plot.style_stepline_diamond)
+plot(useScaleInMode and showScaleInLines ? scaleInTrigger : na, "Scale-in 2R trigger", color=color.new(color.teal, 0), linewidth=2, style=plot.style_circles)
+plot(useScaleInMode and showScaleInLines ? finalTp : na, "Scale-in 4R final TP", color=color.new(color.fuchsia, 0), linewidth=2, style=plot.style_circles)
+
+//==============================================================================
+// Context table
+//==============================================================================
+var table ctx = table.new(position.top_right, 2, 11, bgcolor=color.new(color.black, 78))
+if showContext and barstate.islast
+    table.cell(ctx, 0, 0, "Profile",  text_color=color.white)
+    table.cell(ctx, 1, 0, profile,     text_color=color.white)
+    table.cell(ctx, 0, 1, "Bias",     text_color=color.white)
+    table.cell(ctx, 1, 1, biasText,   text_color=structureTrend == 1 ? color.lime : structureTrend == -1 ? color.red : color.silver)
+    table.cell(ctx, 0, 2, "P/D",      text_color=color.white)
+    table.cell(ctx, 1, 2, pdZone,     text_color=pdZone == "discount" ? color.aqua : pdZone == "premium" ? color.orange : color.silver)
+    table.cell(ctx, 0, 3, "Swing Hi", text_color=color.white)
+    table.cell(ctx, 1, 3, str.tostring(displaySwingHigh, format.mintick), text_color=color.orange)
+    table.cell(ctx, 0, 4, "Swing Lo", text_color=color.white)
+    table.cell(ctx, 1, 4, str.tostring(displaySwingLow,  format.mintick), text_color=color.aqua)
+    table.cell(ctx, 0, 5, "Structure", text_color=color.white)
+    table.cell(ctx, 1, 5, lastStructureText, text_color=color.white)
+    table.cell(ctx, 0, 6, "Sweep",   text_color=color.white)
+    table.cell(ctx, 1, 6, lastSweepText, text_color=color.white)
+    table.cell(ctx, 0, 7, "OB",      text_color=color.white)
+    table.cell(ctx, 1, 7, lastObText, text_color=color.white)
+    table.cell(ctx, 0, 8, "FVG",     text_color=color.white)
+    table.cell(ctx, 1, 8, lastFvgText, text_color=color.white)
+    table.cell(ctx, 0, 9, "Pool",    text_color=color.white)
+    table.cell(ctx, 1, 9, lastPoolText, text_color=color.silver)
+    table.cell(ctx, 0, 10, "Diag",   text_color=color.white)
+    table.cell(ctx, 1, 10, lastDiagnostic, text_color=color.silver)
+
+//==============================================================================
+// Alert conditions
+//==============================================================================
+alertcondition(bosSignal == 1 or bosSignal == -1, "SMC BOS", "SMC BOS fired")
+alertcondition(chochSignal == 1 or chochSignal == -1, "SMC CHoCH", "SMC CHoCH fired")
+alertcondition((bosSignal == 1 or bosSignal == -1) and not na(brokenLevel), "SMC OB activated", "SMC order block activated")
+alertcondition((lastSweepText != "none") and (lastSweepText != (lastSweepText[1] == "" ? "none" : lastSweepText[1])), "SMC sweep", "SMC liquidity sweep detected")
+alertcondition((lastPoolText != "none") and (lastPoolText != (lastPoolText[1] == "" ? "none" : lastPoolText[1])), "SMC pool event", "SMC pool activated or swept")
+alertcondition(rulebookState == "chart-qualified" and rulebookState[1] != "chart-qualified", "SMC chart-qualified", "SMC candidate became chart-qualified")
+alertcondition(rulebookState == "watch" and rulebookState[1] != "watch", "SMC watch", "SMC candidate became watch")
+alertcondition(rulebookState == "blocked" and rulebookState[1] != "blocked", "SMC blocked", "SMC candidate became blocked")
