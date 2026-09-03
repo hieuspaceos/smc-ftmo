@@ -1,8 +1,10 @@
 # Plan — Mac mini cTrader Signal Bot
 
-> **Status**: READY FOR APPROVAL  
+> **Status**: PHASES 01–04 IMPLEMENTED (2026-09-03)  
 > **Created**: 2026-09-03  
 > **Supersedes**: `plans/260831-XXXX-mac-mini-ctrader-bot/` (draft)
+>
+> Live OpenApiPy fetch_fn wiring + user smoke = Phase 05 (docs done; live optional).
 
 ## Outcome
 
@@ -55,11 +57,11 @@ cTrader Open API (demo/live)
 ## Phases
 
 | # | Phase | Status | Detail |
-|---|--------|--------|--------|
-| 01 | Package scaffold + config + state | pending | [phase-01](./phase-01-package-scaffold-config-state.md) |
-| 02 | Data feed abstraction + cTrader client | pending | [phase-02](./phase-02-data-feed-ctrader-client.md) |
-| 03 | Signal engine + watcher loop | pending | [phase-03](./phase-03-signal-engine-watcher.md) |
-| 04 | Telegram notify + dry-run | pending | [phase-04](./phase-04-telegram-notify.md) |
+| 01 | Package scaffold + config + state | **done** | [phase-01](./phase-01-package-scaffold-config-state.md) |
+| 02 | Data feed abstraction + cTrader client | **done** (mock/live hook) | [phase-02](./phase-02-data-feed-ctrader-client.md) |
+| 03 | Signal engine + watcher loop | **done** | [phase-03](./phase-03-signal-engine-watcher.md) |
+| 04 | Telegram notify + dry-run | **done** | [phase-04](./phase-04-telegram-notify.md) |
+| 05 | Mac deploy docs + live smoke | **docs done** / smoke user | [phase-05](./phase-05-mac-deploy-live-smoke.md) |
 | 05 | Mac deploy docs + live smoke | pending | [phase-05](./phase-05-mac-deploy-live-smoke.md) |
 
 ## Dependencies

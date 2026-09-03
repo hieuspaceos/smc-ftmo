@@ -12,6 +12,7 @@ packages/
 ├── smc_engine/          ← Python SMC engine (swing, BOS/CHoCH, OB, FVG, liquidity, regime)
 ├── smc_bot_core/        ← Shared DB + settings + payload models
 ├── smc_bot_webhook/     ← FastAPI webhook + Telegram + 11-gate validator + MT5 file bridge
+├── smc_bot_signal/      ← cTrader Open API M15 signal bot (Mac mini, no MT5)
 ├── smc_bot_backtest/    ← Phase 04: replay engine + signal CSV capture
 └── smc_bot_dashboard/  ← Phase 05: FastAPI admin + Vue 3 SPA on Cloudflare Pages
 
@@ -32,6 +33,7 @@ output/                 ← Runtime artifacts (gitignored)
 pip install -e packages/smc_engine \
             -e packages/smc_bot_core \
             -e packages/smc_bot_webhook \
+            -e packages/smc_bot_signal \
             -e packages/smc_bot_backtest \
             -e packages/smc_bot_dashboard
 ```

@@ -18,6 +18,7 @@ for pkg in [
     "smc_engine",
     "smc_bot_core",
     "smc_bot_webhook",
+    "smc_bot_signal",
     "smc_bot_backtest",
     "smc_bot_dashboard",
 ]:

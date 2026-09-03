@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smc_bot_signal"
+version = "0.1.0"
+description = "cTrader Open API M15 signal bot — smc_engine detect + Telegram alert"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "httpx>=0.27,<1.0",
+    "python-dotenv>=1.0,<2.0",
+    "python-telegram-bot>=21.0,<23.0",
+    "smc_engine>=0.3.0",
+    "smc_bot_webhook>=0.2.0",
+]
+
+[project.optional-dependencies]
+ctrader = [
+    "ctrader-open-api>=0.9.0",
+    "twisted>=22.0",
+    "protobuf>=3.20",
+]
+
+[project.scripts]
+smc-signal = "smc_bot_signal.watcher:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["smc_bot_signal*"]
