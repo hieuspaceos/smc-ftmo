@@ -54,6 +54,9 @@ TF_PINE_TO_CANONICAL = {
     "M": "M",
 }
 
+# Phase 1 (Pine emit JSON): EVENT allows underscore form (chart_qualified).
+# Both forms accepted for backward compat with older Pine scripts that may
+# still emit the hyphenated variant (chart-qualified).
 EVENT_VALUES = (
     "bos",
     "choch",
@@ -61,11 +64,20 @@ EVENT_VALUES = (
     "sweep",
     "pool",
     "chart_qualified",
+    "chart-qualified",  # legacy hyphenated form
     "watch",
     "blocked",
 )
 
-STATE_VALUES = ("chart-qualified", "watch", "blocked", "no-signal")
+# STATE: accept both hyphen (canonical) and underscore forms.
+STATE_VALUES = (
+    "chart-qualified",
+    "chart_qualified",  # normalized form
+    "watch",
+    "blocked",
+    "no-signal",
+    "no_signal",  # normalized form
+)
 # Phase 01 (per plan) accepts all four; downstream phases gate on the value.
 STATE_PHASE01_ACCEPTED = STATE_VALUES
 
@@ -105,9 +117,23 @@ def normalize_dir(raw: str) -> Literal["long", "short", "none"]:
 
 
 def normalize_state(raw: str) -> str:
-    """Lowercase, hyphenated canonical. Pine emits ``chart-qualified`` etc."""
-    return (raw or "").strip().lower()
+    """Lowercase canonical. State uses hyphen form ``chart-qualified``.
+    Some Pine scripts emit underscore form; map it to canonical hyphen.
+    """
+    s = (raw or "").strip().lower()
+    s = s.replace("chart_qualified", "chart-qualified")
+    s = s.replace("no_signal", "no-signal")
+    return s
 
+
+def normalize_event(raw: str) -> str:
+    """Lowercase canonical. Event uses underscore form ``chart_qualified``.
+    Some Pine scripts emit hyphen form; map it to canonical underscore.
+    """
+    s = (raw or "").strip().lower()
+    s = s.replace("chart-qualified", "chart_qualified")
+    s = s.replace("no-signal", "no_signal")
+    return s
 
 def compute_signal_id(
     event: str,
@@ -204,6 +230,34 @@ class AlertPayload(BaseModel):
     received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     raw_payload: str = ""
     signal_id: str = ""
+
+    # Phase 1 (Pine emit JSON): trade levels. All optional to keep
+    # backward compatibility with older webhook payloads that don't
+    # include them.
+    entry: float | None = None
+    sl: float | None = None
+    tp1: float | None = None
+    tp2: float | None = None
+    tp3: float | None = None
+    score: float | None = None
+
+    @field_validator("entry", "sl", "tp1", "tp2", "tp3")
+    @classmethod
+    def _levels_positive(cls, v: float | None) -> float | None:
+        if v is None:
+            return v
+        if v <= 0:
+            raise ValueError(f"price level must be > 0, got {v}")
+        return v
+
+    @field_validator("score")
+    @classmethod
+    def _score_in_range(cls, v: float | None) -> float | None:
+        if v is None:
+            return v
+        if v < 0 or v > 5:
+            raise ValueError(f"score must be in [0, 5], got {v}")
+        return v
 
     @field_validator("event")
     @classmethod
@@ -314,10 +368,19 @@ def _coerce_from_dict(d: dict[str, Any]) -> dict[str, Any]:
     missing = [k for k in required if k not in d]
     if missing:
         raise PayloadParseError(f"missing required fields: {missing}")
+    def _opt_float(key: str) -> float | None:
+        v = d.get(key)
+        if v is None or v == "":
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            raise PayloadParseError(f"{key} must be numeric, got {v!r}")
+
     return {
         "prefix": d["prefix"],
         "version": d["version"],
-        "event": d["event"],
+        "event": normalize_event(d["event"]),
         "symbol": normalize_symbol(d["symbol"]),
         "tf": normalize_tf(d["tf"]),
         "dir": normalize_dir(d["dir"]),
@@ -327,6 +390,13 @@ def _coerce_from_dict(d: dict[str, Any]) -> dict[str, Any]:
         "bos_id": int(d.get("bos_id", -1)),
         "state": normalize_state(d["state"]),
         "reason": str(d.get("reason", "") or ""),
+        # Phase 1 (Pine emit JSON): trade levels + score (all optional).
+        "entry": _opt_float("entry"),
+        "sl":    _opt_float("sl"),
+        "tp1":   _opt_float("tp1"),
+        "tp2":   _opt_float("tp2"),
+        "tp3":   _opt_float("tp3"),
+        "score": _opt_float("score"),
     }
 
 

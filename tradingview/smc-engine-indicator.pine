@@ -1219,5 +1219,31 @@ alertcondition((bosSignal == 1 or bosSignal == -1) and not na(brokenLevel), "SMC
 alertcondition((lastSweepText != "none") and (lastSweepText != (lastSweepText[1] == "" ? "none" : lastSweepText[1])), "SMC sweep", "SMC liquidity sweep detected")
 alertcondition((lastPoolText != "none") and (lastPoolText != (lastPoolText[1] == "" ? "none" : lastPoolText[1])), "SMC pool event", "SMC pool activated or swept")
 alertcondition(rulebookState == "chart-qualified" and rulebookState[1] != "chart-qualified", "SMC chart-qualified", "SMC candidate became chart-qualified")
+
+// Phase 1 (Pine emit JSON webhook payload): fires an SMC|v1 pipe-delimited
+// payload on every chart-qualified setup so the bot can parse trade levels
+// (entry/SL/TP1/2/3/score) and pass them to Telegram. This is the ONLY
+// alert() that emits a structured payload; the alertcondition() lines
+// above remain for chart labeling only.
+if useScaleInMode and rulebookState == "chart-qualified" and rulebookState[1] != "chart-qualified"
+    chartQualifiedJSON = str.format(
+      "SMC|v1|event=chart_qualified|symbol={0}|tf={1}|dir={2}|level={3}|bar_time={4}|ob_id={5}|bos_id={6}|state={7}|reason={8}|entry={9}|sl={10}|tp1={11}|tp2={12}|tp3={13}|score={14}",
+      syminfo.ticker,
+      timeframe.period,
+      bestObDir == 1 ? "long" : "short",
+      str.tostring(entry, format.mintick),
+      bar_time,
+      str.tostring(bestObId),
+      str.tostring(bestBosId),
+      "chart-qualified",
+      bestReason,
+      str.tostring(entry, format.mintick),
+      str.tostring(slEdge, format.mintick),
+      str.tostring(scaleInTrigger, format.mintick),
+      str.tostring(scaleInTrigger + (finalTp - scaleInTrigger) * 0.5, format.mintick),
+      str.tostring(finalTp, format.mintick),
+      str.tostring(bestScore)
+    )
+    alert("SMC chart-qualified JSON", chartQualifiedJSON)
 alertcondition(rulebookState == "watch" and rulebookState[1] != "watch", "SMC watch", "SMC candidate became watch")
 alertcondition(rulebookState == "blocked" and rulebookState[1] != "blocked", "SMC blocked", "SMC candidate became blocked")

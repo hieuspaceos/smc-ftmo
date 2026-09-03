@@ -92,6 +92,8 @@ class AppSettings:
     security: SecurityConfig
     trusted_proxy: bool
     telegram_callback_secret: str | None = None
+    # Phase 1.5: Pine integration / Python SMC validator config.
+    pine_integration: dict[str, Any] | None = None
 
     @classmethod
     def from_env(cls) -> "AppSettings":
@@ -105,6 +107,10 @@ class AppSettings:
             )
         db = Path(_env("SMC_BOT_DB_PATH", str(get_default_db_path())) or str(get_default_db_path()))
         telegram_secret = _env("TELEGRAM_CALLBACK_SECRET", "") or ""
+        # Phase 1.5: Pine integration / validator settings.
+        pine_validate = _env_bool("SMC_VALIDATE_PINE_SIGNAL", True)
+        pine_tolerance = float(_env("SMC_VALIDATION_TOLERANCE_PIPS", "5") or "5")
+        pine_timeout = float(_env("SMC_VALIDATION_TIMEOUT_SECONDS", "2") or "2")
         bot_token = _env("TELEGRAM_BOT_TOKEN", "") or ""
         if bot_token and not telegram_secret:
             raise RuntimeError(
@@ -117,18 +123,45 @@ class AppSettings:
                 f"TELEGRAM_CALLBACK_SECRET is too short ({len(telegram_secret)} chars). "
                 f"Use at least {MIN_SECRET_LENGTH} chars."
             )
+        # Phase 1.5: Pine integration / Python SMC validator config.
+        pine_validate = _env_bool("SMC_VALIDATE_PINE_SIGNAL", True)
+        pine_tolerance = float(_env("SMC_VALIDATION_TOLERANCE_PIPS", "5") or "5")
+        pine_timeout = float(_env("SMC_VALIDATION_TIMEOUT_SECONDS", "2") or "2")
+
         return cls(
             url_secret=secret,
             db_path=db,
             security=SecurityConfig(url_secret=secret),
             trusted_proxy=_env("SMC_TRUSTED_PROXY", "0") == "1",
             telegram_callback_secret=telegram_secret or None,
+            pine_integration={
+                "validate_pine_signal": pine_validate,
+                "validation_tolerance_pips": pine_tolerance,
+                "validation_timeout_seconds": pine_timeout,
+            },
         )
 
 
 # ---------------------------------------------------------------------------
 # Rate limiter + throttled logger
 # ---------------------------------------------------------------------------
+
+
+def _load_m15_data_for(symbol: str):
+    """Phase 1.5: load M15 OHLCV parquet for the given symbol.
+
+    Returns ``None`` on any failure (file missing, schema mismatch). The
+    validator treats None as "unable to validate" rather than crashing.
+    """
+    try:
+        from pathlib import Path
+        import pandas as pd
+        path = Path(__file__).resolve().parents[3] / "data" / f"{symbol.lower()}_m15.parquet"
+        if not path.exists():
+            return None
+        return pd.read_parquet(path)
+    except Exception:
+        return None
 
 
 class _RateLimiter:
@@ -277,7 +310,11 @@ async def _safe_dispatch_telegram(
     *,
     gate_states: dict[str, bool | None] | None = None,
     missing_gates: list[str] | None = None,
+    validation: Any | None = None,
 ) -> None:
+    """Forward Telegram notification. Phase 1.5 validation is passed
+    through as an inline annotation only — it never blocks this send.
+    """
     if not getattr(dispatcher, "enabled", False):
         await _safe_record(db, signal_id, "notified_skipped", payload=payload_json, actor="telegram")
         return
@@ -285,9 +322,11 @@ async def _safe_dispatch_telegram(
         if missing_gates is not None:
             msg_id = await dispatcher.send_with_gates(
                 payload, gate_states=gate_states or {}, missing_gates=missing_gates,
+                validation=validation,
             )
         else:
-            msg_id = await dispatcher.send_signal(payload, gate_states=gate_states)
+            msg_id = await dispatcher.send_signal(payload, gate_states=gate_states,
+                                                  validation=validation)
         if msg_id is not None:
             await _safe_record(db, signal_id, "notified", payload=payload_json, actor="telegram")
         else:
@@ -316,10 +355,31 @@ async def _dispatch_signal(
     db: BotDB,
     validator: Validator | None = None,
     gate_store: GateStateStore | None = None,
+    *,
+    m15_data_provider: Any | None = None,
+    validation_config: dict[str, Any] | None = None,
 ) -> None:
-    """Background dispatch. Validator short-circuits Telegram when blocked/expired."""
+    """Background dispatch. Chart validator short-circuits Telegram when
+    blocked/expired. Phase 1.5 Python SMC validator runs as defense-in-depth
+    and only ANNOTATES the Telegram message (never blocks).
+    """
     signal_id = payload.signal_id
     payload_json = callback_payload_json(payload)
+
+    # Phase 1.5: compute Python SMC validation result (annotation only).
+    py_validation = None
+    if (validation_config or {}).get("validate_pine_signal", True) and m15_data_provider is not None:
+        try:
+            from smc_bot_webhook.smc_validator import validate_pine_signal
+            m15_df = m15_data_provider(payload.symbol)
+            py_validation = validate_pine_signal(
+                payload, m15_df,
+                tolerance_pips=validation_config.get("validation_tolerance_pips", 5.0),
+                timeout_seconds=validation_config.get("validation_timeout_seconds", 2.0),
+            )
+        except Exception as exc:
+            logger.warning("Phase 1.5 validator crashed: signal_id=%s exc=%s", signal_id, exc)
+            py_validation = None
 
     if validator is not None and gate_store is not None:
         try:
@@ -350,6 +410,7 @@ async def _dispatch_signal(
             await _safe_dispatch_telegram(
                 dispatcher, db, payload, payload_json, signal_id,
                 gate_states=gate_states, missing_gates=missing_gates,
+                validation=py_validation,
             )
             if getattr(mirror, "enabled", False):
                 await _safe_dispatch_mirror(mirror, db, payload, payload_json, signal_id)
@@ -361,7 +422,8 @@ async def _dispatch_signal(
             )
 
     # Fallback: no validator or validator crashed → Phase 02 behavior.
-    await _safe_dispatch_telegram(dispatcher, db, payload, payload_json, signal_id)
+    await _safe_dispatch_telegram(dispatcher, db, payload, payload_json, signal_id,
+                                  validation=py_validation)
     if getattr(mirror, "enabled", False):
         await _safe_dispatch_mirror(mirror, db, payload, payload_json, signal_id)
 
@@ -951,6 +1013,8 @@ def create_app(
                 active_db,
                 validator,
                 gate_store,
+                m15_data_provider=_load_m15_data_for,
+                validation_config=settings.pine_integration,
             )
 
         body_json = {

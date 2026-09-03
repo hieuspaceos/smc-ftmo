@@ -228,3 +228,92 @@ class TestDiscordRateLimit:
         # call's entry is > 10s old. Assert at least 0.5s of waiting
         # happened (allows slack for asyncio scheduling).
         assert elapsed >= 0.5, f"3rd send didn't wait: {elapsed:.2f}s"
+
+
+class TestPhase1TradeLevels:
+    """Phase 1 (Pine emit JSON): trade-level lines in Telegram message."""
+
+    def _payload(self, **overrides):
+        p = parse_payload(
+            "SMC|v1|event=chart_qualified|symbol=EURUSD|tf=15|dir=long"
+            "|level=1.10000|bar_time=1700000000|ob_id=42|bos_id=7"
+            "|state=chart-qualified|reason=ok"
+            "|entry=1.08500|sl=1.07900|tp1=1.09700|tp2=1.10300"
+            "|tp3=1.10900|score=4.5"
+        )
+        for k, v in overrides.items():
+            object.__setattr__(p, k, v)
+        return p
+
+    def test_trade_levels_rendered(self) -> None:
+        p = self._payload()
+        msg = format_telegram_message(p)
+        assert "Entry `1.08500`" in msg
+        assert "SL `1.07900`" in msg
+        assert "TP1 `1.09700`" in msg
+        assert "TP2 `1.10300`" in msg
+        assert "TP3 `1.10900`" in msg
+        assert "Score `4.50`" in msg
+
+    def test_no_trade_levels_no_crash(self) -> None:
+        """Backward compat: payload without trade levels still renders."""
+        p = parse_payload(
+            "SMC|v1|event=chart_qualified|symbol=EURUSD|tf=15|dir=long"
+            "|level=1.10000|bar_time=1700000000|ob_id=42|bos_id=7"
+            "|state=chart-qualified|reason=ok"
+        )
+        msg = format_telegram_message(p)
+        assert "Entry" not in msg
+        assert "TP1" not in msg
+
+
+class TestPhase1_5ValidationTag:
+    """Phase 1.5: Python SMC validation annotation tag in Telegram."""
+
+    def _validation(self, *, matched, reason="test"):
+        from smc_bot_webhook.smc_validator import ValidationResult
+        return ValidationResult(
+            matched=matched,
+            reason=reason,
+            diff={"entry_pips": 1.5} if matched is True else {"entry_pips": 8.0},
+            pine_signal=None,
+            python_signal=None,
+        )
+
+    def test_validation_matched_renders_checkmark(self) -> None:
+        p = parse_payload(VALID_PIPE)
+        v = self._validation(matched=True)
+        msg = format_telegram_message(p, validation=v)
+        assert "Python check" in msg
+        assert "matched" in msg
+        assert "1.5 pips" in msg
+
+    def test_validation_diverge_renders_warning(self) -> None:
+        p = parse_payload(VALID_PIPE)
+        v = self._validation(matched=False, reason="entry differs by 8 pips")
+        msg = format_telegram_message(p, validation=v)
+        assert "Python check" in msg
+        assert "diverge" in msg
+        assert "8 pips" in msg
+
+    def test_validation_none_renders_skipped(self) -> None:
+        """matched=None (OB not found / timeout) renders as skipped."""
+        p = parse_payload(VALID_PIPE)
+        v = self._validation(matched=None, reason="OB id=42 not found")
+        msg = format_telegram_message(p, validation=v)
+        assert "Python check" in msg
+        assert "skipped" in msg
+        assert "OB id" in msg
+
+    def test_no_validation_arg_skips_annotation(self) -> None:
+        p = parse_payload(VALID_PIPE)
+        msg = format_telegram_message(p)  # no validation kwarg
+        assert "Python check" not in msg
+
+    def test_validation_disabled_renders_skipped_disabled(self) -> None:
+        """When validator is disabled, render 'skipped (disabled)'."""
+        from smc_bot_webhook.smc_validator import ValidationResult
+        p = parse_payload(VALID_PIPE)
+        v = ValidationResult(matched=None, reason="disabled")
+        msg = format_telegram_message(p, validation=v)
+        assert "skipped (disabled)" in msg

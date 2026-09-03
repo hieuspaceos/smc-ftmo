@@ -244,3 +244,81 @@ class TestParsePayload:
         )
         with pytest.raises(PayloadParseError):
             parse_payload(body)
+
+
+class TestPhase1TradeLevels:
+    """Phase 1: Pine emits entry/sl/tp1/tp2/tp3/score."""
+
+    def test_pipe_with_all_trade_levels(self) -> None:
+        body = (
+            "SMC|v1|event=chart-qualified|symbol=EURUSD|tf=15|dir=long"
+            "|level=1.10000|bar_time=1700000000|ob_id=42|bos_id=7"
+            "|state=chart_qualified|reason=ok"
+            "|entry=1.08500|sl=1.07900|tp1=1.09700|tp2=1.10300|tp3=1.10900|score=4.5"
+        )
+        p = parse_payload(body)
+        assert p.entry == 1.08500
+        assert p.sl == 1.07900
+        assert p.tp1 == 1.09700
+        assert p.tp2 == 1.10300
+        assert p.tp3 == 1.10900
+        assert p.score == 4.5
+
+    def test_pipe_without_trade_levels_still_valid(self) -> None:
+        """Backward compat: old payloads (no entry/sl/tp) still parse."""
+        body = (
+            "SMC|v1|event=chart_qualified|symbol=EURUSD|tf=15|dir=long"
+            "|level=1.10000|bar_time=1700000000|ob_id=42|bos_id=7"
+            "|state=chart_qualified|reason=ok"
+        )
+        p = parse_payload(body)
+        assert p.entry is None
+        assert p.sl is None
+        assert p.tp1 is None
+        assert p.tp2 is None
+        assert p.tp3 is None
+        assert p.score is None
+
+    def test_partial_trade_levels(self) -> None:
+        """Only some trade levels are present."""
+        body = (
+            "SMC|v1|event=chart-qualified|symbol=EURUSD|tf=15|dir=long"
+            "|level=1.10000|bar_time=1700000000|ob_id=42|bos_id=7"
+            "|state=chart_qualified|reason=ok"
+            "|entry=1.08500|sl=1.07900|score=4.5"
+        )
+        p = parse_payload(body)
+        assert p.entry == 1.08500
+        assert p.sl == 1.07900
+        assert p.tp1 is None
+        assert p.score == 4.5
+
+    def test_rejects_negative_entry(self) -> None:
+        body = (
+            "SMC|v1|event=chart-qualified|symbol=EURUSD|tf=15|dir=long"
+            "|level=1.10000|bar_time=1700000000|ob_id=42|bos_id=7"
+            "|state=chart_qualified|reason=ok"
+            "|entry=-1.08500|sl=1.07900"
+        )
+        with pytest.raises(PayloadParseError):
+            parse_payload(body)
+
+    def test_rejects_score_above_5(self) -> None:
+        body = (
+            "SMC|v1|event=chart-qualified|symbol=EURUSD|tf=15|dir=long"
+            "|level=1.10000|bar_time=1700000000|ob_id=42|bos_id=7"
+            "|state=chart_qualified|reason=ok"
+            "|entry=1.08500|sl=1.07900|score=6.0"
+        )
+        with pytest.raises(PayloadParseError):
+            parse_payload(body)
+
+    def test_rejects_non_numeric_trade_level(self) -> None:
+        body = (
+            "SMC|v1|event=chart-qualified|symbol=EURUSD|tf=15|dir=long"
+            "|level=1.10000|bar_time=1700000000|ob_id=42|bos_id=7"
+            "|state=chart_qualified|reason=ok"
+            "|entry=not_a_number|sl=1.07900"
+        )
+        with pytest.raises(PayloadParseError):
+            parse_payload(body)

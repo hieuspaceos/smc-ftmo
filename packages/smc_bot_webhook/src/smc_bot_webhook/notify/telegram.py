@@ -302,9 +302,14 @@ class TelegramDispatcher:
         payload: AlertPayload,
         *,
         gate_states: dict[str, bool | None] | None = None,
+        validation: Any | None = None,
     ) -> int | None:
+        """Send signal to Telegram. Optional ``validation`` (Phase 1.5) is
+        passed through to ``format_telegram_message`` for inline annotation.
+        """
         nonce = secrets.token_hex(8)
-        text = format_telegram_message(payload, gate_states=gate_states)
+        text = format_telegram_message(payload, gate_states=gate_states,
+                                      validation=validation)
         keyboard = build_inline_keyboard(payload.signal_id, nonce)
         return await self._do_send(payload, text, keyboard)
 
@@ -314,10 +319,14 @@ class TelegramDispatcher:
         *,
         gate_states: dict[str, bool | None],
         missing_gates: list[str],
+        validation: Any | None = None,
     ) -> int | None:
-        """Send alert + keyboard that includes per-gate ack rows when needed."""
+        """Send alert + keyboard that includes per-gate ack rows when needed.
+        Optional ``validation`` (Phase 1.5) is passed through for inline annotation.
+        """
         nonce = secrets.token_hex(8)
-        text = format_telegram_message(payload, gate_states=gate_states)
+        text = format_telegram_message(payload, gate_states=gate_states,
+                                      validation=validation)
         if missing_gates:
             from smc_bot_webhook.notify.formatting import build_ack_keyboard
 

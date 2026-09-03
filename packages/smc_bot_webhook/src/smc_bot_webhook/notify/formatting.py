@@ -127,11 +127,62 @@ def render_gate_checklist(states: dict[str, bool | None] | None = None) -> str:
         lines.append(f"  {mark} {name}")
     return "\n".join(lines)
 
+def _format_validation_tag(validation: Any | None) -> str:
+    """Render the Phase 1.5 Python SMC validation annotation.
+
+    Phase 1.5: validation is an annotation, never a gate. Three states:
+      matched=True   Pine + Python agree
+      matched=False  Pine + Python disagree
+      matched=None   Unable to validate (timeout / OB not found / error)
+    """
+    if validation is None:
+        return "Python check: `skipped (disabled)`"
+
+    matched = getattr(validation, "matched", None)
+    if matched is True:
+        diff = getattr(validation, "diff", {}) or {}
+        entry_diff = float(diff.get("entry_pips", 0.0))
+        return f"Python check: `✓ matched` (entry diff {entry_diff:.1f} pips)"
+    if matched is False:
+        reason = getattr(validation, "reason", "diverged") or "diverged"
+        return f"Python check: `⚠️ diverge — {reason}`"
+
+    # matched is None: unable to validate
+    reason = getattr(validation, "reason", "unable to validate") or "unable to validate"
+    return f"Python check: `⚠️ skipped ({reason})`"
+
+
+def _format_trade_levels(payload: Any) -> list[str]:
+    """Render the optional trade-level lines (entry / SL / TP1..3 / score)."""
+    lines: list[str] = []
+    entry = getattr(payload, "entry", None)
+    sl = getattr(payload, "sl", None)
+    tp1 = getattr(payload, "tp1", None)
+    tp2 = getattr(payload, "tp2", None)
+    tp3 = getattr(payload, "tp3", None)
+    score = getattr(payload, "score", None)
+    if entry is not None:
+        sl_text = f"SL `{sl:.5f}`" if sl is not None else "SL n/a"
+        tp1_text = f"TP1 `{tp1:.5f}`" if tp1 is not None else ""
+        tp2_text = f"TP2 `{tp2:.5f}`" if tp2 is not None else ""
+        line = f"Entry `{entry:.5f}`  •  {sl_text}"
+        if tp1_text:
+            line += f"  •  {tp1_text}"
+        if tp2_text:
+            line += f"  •  {tp2_text}"
+        if tp3 is not None:
+            line += f"  •  TP3 `{tp3:.5f}`"
+        if score is not None:
+            line += f"  •  Score `{score:.2f}`"
+        lines.append(line)
+    return lines
+
 
 def format_telegram_message(
     payload: AlertPayload,
     *,
     gate_states: dict[str, bool | None] | None = None,
+    validation: Any | None = None,
 ) -> str:
     """Render MarkdownV2 message body for Telegram.
 
@@ -140,6 +191,9 @@ def format_telegram_message(
     Telegram when the payload contains reserved characters like
     ``_*[]()``. Numeric / structured fields are wrapped in inline
     code (``...``) which doesn't require escaping.
+
+    ``validation``: optional Phase 1.5 ``ValidationResult`` to annotate the
+    message with a Python SMC engine cross-check tag.
     """
     bar_time_iso = (
         datetime.fromtimestamp(payload.bar_time, tz=timezone.utc).isoformat()
@@ -155,12 +209,23 @@ def format_telegram_message(
         f"Event: `{_md2_escape(payload.event)}`  •  Reason: `{_md2_escape(payload.reason or '—')}`",
         f"Level: `{payload.level:.5f}`  •  Bar: `{bar_time_iso}`",
         f"OB id: `{payload.ob_id}`  •  BOS id: `{payload.bos_id}`",
-        "",
+    ]
+
+    # Phase 1 (Pine emit JSON): trade levels (optional).
+    lines.extend(_format_trade_levels(payload))
+    lines.append("")  # blank separator
+
+    lines.extend([
         "*Manual gates*",
         render_gate_checklist(gate_states),
         "",
-        f"signal\\_id: `{payload.signal_id}`",
-    ]
+    ])
+
+    # Phase 1.5 (Python validation): annotation tag (never blocks send).
+    if validation is not None:
+        lines.extend([_format_validation_tag(validation), ""])
+
+    lines.append(f"signal\\_id: `{payload.signal_id}`")
     return "\n".join(lines)
 
 
