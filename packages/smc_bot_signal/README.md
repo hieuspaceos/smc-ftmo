@@ -22,7 +22,7 @@ Matches `journal/rule-book.md` / `src/confluence.py` + live pip floor:
 3. **D + H4 bias aligned** (resampled from M15)
 4. **Score ≥ 4**
 5. SL buffer 0.2×ATR; SL in [0.3, 4.0] ATR; proximity ≤ 1.5 ATR
-6. **`min_sl_pips` default 10** (EURUSD) — manual lag + spread
+6. **`min_sl_pips` default 17** (EURUSD) — manual lag + spread
 7. TP ladder 2R / 3R / 4R
 
 Missing gate → **no Telegram**.

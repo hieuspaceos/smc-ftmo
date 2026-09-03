@@ -254,8 +254,8 @@ def check_entry(snapshot: Dict) -> Optional[Dict]:
     if max_sl_atr < 99.0 and risk_per_unit > max_sl_atr * atr:
         return None
 
-    # Absolute pip floor (live realism vs spread). Pair-specific map or scalar.
-    # EURUSD M15: user floor 10 pips — SL below spread+noise is not tradeable.
+    # Absolute pip floor (live realism vs spread + manual lag). Pair map or scalar.
+    # EURUSD M15: user floor 17 pips — room after signal→confirm→order delay.
     pair = str(snapshot.get("pair") or "")
     min_sl_pips_raw = snapshot.get("min_sl_pips", 0)
     if isinstance(min_sl_pips_raw, dict):

@@ -254,7 +254,7 @@ class SignalEngine:
         sl_atr = risk / atr_v
         if sl_atr < self.cfg.min_sl_atr or sl_atr > self.cfg.max_sl_atr:
             return None
-        # Absolute pip floor (EURUSD live: >= 10 pips)
+        # Absolute pip floor (EURUSD live: >= 17 pips)
         pip_size = 0.01 if symbol.upper().startswith("XAU") else 0.0001
         if symbol.upper().startswith("BTC"):
             pip_size = 1.0

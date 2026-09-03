@@ -46,7 +46,7 @@ SHARED_CFG = {
         # config.yaml — without these, OB ~1 pip leaks (seen min 0.86 pip)
         "min_sl_atr": 0.3,
         "max_sl_atr": 4.0,
-        "min_sl_pips": {"EURUSD": 10, "XAUUSD": 100},
+        "min_sl_pips": {"EURUSD": 17, "XAUUSD": 100},
         "rulebook_entry_proximity_atr": 1.5,
         "htf_daily_enabled": False,
         "htf_h4_enabled": False,

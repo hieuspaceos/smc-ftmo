@@ -1,36 +1,40 @@
 # min_sl_pips — live SL floor
 
-## Decision (2026-09-03)
+## Decision
 
-EURUSD M15 alerts/trades require **SL ≥ 10 pips**.
+| Pair | Floor | Updated |
+|------|------:|---------|
+| **EURUSD** | **≥ 17 pips** | 2026-09-03 (was 10; user: still tight for manual lag) |
+| **XAUUSD** | ≥ 100 pips ($1.00 @ pip=0.01) | 2026-09-03 |
 
-### Why
+### Why EUR ≥ 17
 
-1. **Spread** (~0.5–1 pip FTMO): sub-3 pip SL is not tradeable.
-2. **Manual lag**: signal → chart confirm → order. Price often moves before fill.
-   Thin OB SL is already gone by the time the human enters.
+1. Spread ~0.5–1 pip  
+2. **Manual lag**: Telegram → open chart → confirm → place order — price often runs  
+3. Mean EUR M15 SL in unfiltered BT ~7 pip; floor 10 still left many “barely room” setups  
+4. User: floor **17** so entry still makes sense after delay  
 
-`min_sl_atr` (0.3×ATR) is **not** enough: quiet M15 ATR ~3 pip → 0.3×ATR ≈ 0.9 pip still passes.
+`min_sl_atr` (0.3×ATR) alone is not enough (quiet ATR → sub-pip SL).
 
 ## Config
 
 ```yaml
 # config.yaml strategy:
 min_sl_pips:
-  EURUSD: 10
-  XAUUSD: 100   # pip_size 0.01 → $1.00 price distance
+  EURUSD: 17
+  XAUUSD: 100
 ```
 
-## Code path
+Bot env: `SMC_SIGNAL_MIN_SL_PIPS=17` (default).
 
-- `src/strategy.check_entry` — rejects if `sl_pips < min_sl_pips`
-- `src/backtester` — snapshot carries map/scalar
-- `smc_bot_signal` — `SignalBotConfig.min_sl_pips` (default 10) on alert build
+## Code
 
-## Empirical (10y, before pip floor)
+- `src/strategy.check_entry`
+- `src/backtester` snapshot
+- `smc_bot_signal` alert build
+- `scripts/btest_*`
 
-EURUSD mean/median SL ≈ **7.0 / 6.1 pip**; cluster 5–10.  
-min observed **0.86 pip** (reject under new floor).
+## Backtest notes
 
-Re-run: `python -m scripts.btest_eur_xau_same_cfg_pips`  
-Report: `output/backtest_10y_eur_xau/REPORT.md`
+- Floor **10**: EUR 125 trades, min SL 10.06, mean 13.6, PF 3.02, +$68k  
+- Floor **17**: re-run via `python -m scripts.btest_eur_xau_same_cfg_pips`
