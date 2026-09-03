@@ -253,6 +253,19 @@ def check_entry(snapshot: Dict) -> Optional[Dict]:
         return None
     if max_sl_atr < 99.0 and risk_per_unit > max_sl_atr * atr:
         return None
+
+    # Absolute pip floor (live realism vs spread). Pair-specific map or scalar.
+    # EURUSD M15: user floor 10 pips — SL below spread+noise is not tradeable.
+    pair = str(snapshot.get("pair") or "")
+    min_sl_pips_raw = snapshot.get("min_sl_pips", 0)
+    if isinstance(min_sl_pips_raw, dict):
+        min_sl_pips = float(min_sl_pips_raw.get(pair.upper(), min_sl_pips_raw.get("default", 0)) or 0)
+    else:
+        min_sl_pips = float(min_sl_pips_raw or 0)
+    if min_sl_pips > 0:
+        sl_pips = risk_per_unit / pip_size_for_pair(pair)
+        if sl_pips < min_sl_pips:
+            return None
     # TP ladder from snapshot (falls back to legacy 2R/3R/4R if absent).
     # snapshot["tp_stages"] is a sequence of (r_multiple, close_pct_of_remaining).
     # We surface only the first 3 R-multiples as tp1/tp2/tp3 — these are

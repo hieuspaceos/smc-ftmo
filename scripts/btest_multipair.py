@@ -49,6 +49,10 @@ DEFAULT_CFG = {
         "require_displacement": True,
         "require_bias_aligned": True,
         "sl_atr_buffer": 0.2,
+        "min_sl_atr": 0.3,
+        "max_sl_atr": 4.0,
+        "min_sl_pips": {"EURUSD": 10, "XAUUSD": 100},
+        "rulebook_entry_proximity_atr": 1.5,
         # HTF off by default (matches user's Pine chart config).
         "htf_daily_enabled": False,
         "htf_h4_enabled": False,

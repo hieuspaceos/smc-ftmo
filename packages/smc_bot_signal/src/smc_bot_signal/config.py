@@ -67,6 +67,8 @@ class SignalBotConfig:
     sl_atr_buffer: float = 0.2
     min_sl_atr: float = 0.3
     max_sl_atr: float = 4.0
+    # EURUSD live floor 10 pips (spread-safe).
+    min_sl_pips: float = 10.0
     entry_proximity_atr: float = 1.5
     tp1_r: float = 2.0
     tp2_r: float = 3.0
@@ -116,6 +118,7 @@ class SignalBotConfig:
             sl_atr_buffer=_env_float("SMC_SIGNAL_SL_ATR_BUFFER", 0.2),
             min_sl_atr=_env_float("SMC_SIGNAL_MIN_SL_ATR", 0.3),
             max_sl_atr=_env_float("SMC_SIGNAL_MAX_SL_ATR", 4.0),
+            min_sl_pips=_env_float("SMC_SIGNAL_MIN_SL_PIPS", 10.0),
             entry_proximity_atr=_env_float("SMC_SIGNAL_ENTRY_PROX_ATR", 1.5),
             tp1_r=_env_float("SMC_SIGNAL_TP1_R", 2.0),
             tp2_r=_env_float("SMC_SIGNAL_TP2_R", 3.0),

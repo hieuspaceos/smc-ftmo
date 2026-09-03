@@ -51,6 +51,11 @@ strategy:
   # Python backtest confirms filter is no-op at these levels.
   min_sl_atr: 0.3
   max_sl_atr: 4.0
+  # Absolute pip floor (live vs spread). EURUSD M15: >=10 pip required.
+  # XAUUSD: 100 pips = $1.00 price (pip_size=0.01). 0 = disabled.
+  min_sl_pips:
+    EURUSD: 10
+    XAUUSD: 100
   # Pine parity: rulebookEntryProximityAtr (default 1.5).
   # Reject trade if entry > this many ATRs from current close.
   rulebook_entry_proximity_atr: 1.5

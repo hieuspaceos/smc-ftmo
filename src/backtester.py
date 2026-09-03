@@ -173,6 +173,7 @@ def run_backtest(
     sl_atr_buffer = float(strat_cfg.get("sl_atr_buffer", config.get("sl_atr_buffer", 0.2)))
     min_sl_atr = float(strat_cfg.get("min_sl_atr", config.get("min_sl_atr", 0.0)))
     max_sl_atr = float(strat_cfg.get("max_sl_atr", config.get("max_sl_atr", 99.0)))
+    min_sl_pips = strat_cfg.get("min_sl_pips", config.get("min_sl_pips", 0))
     rulebook_entry_proximity_atr = float(
         strat_cfg.get("rulebook_entry_proximity_atr", config.get("rulebook_entry_proximity_atr", 1.5)))
     displacement_atr_mult = float(
@@ -596,6 +597,7 @@ def run_backtest(
             "sl_atr_buffer": sl_atr_buffer,
             "min_sl_atr": min_sl_atr,
             "max_sl_atr": max_sl_atr,
+            "min_sl_pips": min_sl_pips,
             "rulebook_entry_proximity_atr": rulebook_entry_proximity_atr,
             "tp_stages": tp_stages,
             # Pine parity: rulebookEntryProximityAtr (default 1.5).
