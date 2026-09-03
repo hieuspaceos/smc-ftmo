@@ -1,55 +1,72 @@
-# Plan — Pine → Webhook → MT5 → Telegram Integration
+# Plan — Pine → Webhook → Telegram (NO MT5)
 
-> **Context**: User wants the SMC Pine indicator (TradingView) to emit
-> trade signals via webhook to a Python bot, which executes trades on
-> MT5 and sends notifications to Telegram.
+> **Context**: User trades manual on TradingView. Wants SMC Pine
+> indicator to send trade signals to Telegram via webhook. NO MT5
+> bridge — user places orders manually on TradingView chart.
 
 ## Goal
 
 End-to-end pipeline:
 ```
-[Pine chart M15]
-   ↓ (TradingView alert with webhook URL)
+[TradingView Pine chart M15]
+   ↓ (alert with webhook URL)
 [Bot webhook server :8000]
    ↓ parse SMC|v1 payload
 [11-gate validator]
    ↓ if all pass
-[MT5 file bridge] → writes pending/sid.json to shared folder
+[Telegram bot]
+   ↓ send message
+[User's phone] 🔔 nhận notification
    ↓
-[MT5 EA mql5_reader.mq5] → polls pending/, OrderSend, writes done/sid.json
-   ↓
-[Bot webhook] → reads done/, updates execution_log
-   ↓
-[Telegram bot] → sends "LONG EURUSD @ 1.0850, SL 1.0790" + later "CLOSED +1.5R"
+[User manual action] → vào TradingView → place order manual
 ```
+
+## Simplified vs original plan
+
+| Removed | Reason |
+|---|---|
+| MT5 host setup (Phase 4) | User trade manual trên TradingView |
+| Cloudflare Tunnel (Phase 5) | Optional, only if bot on VPS without public IP |
+| Order filled message | No MT5 fill event |
+| Trade closed message | User closes manual, can notify bot via reply |
 
 ## Current state
 
 ✅ **Already built**:
 - `tradingview/smc-engine-indicator.pine` — Pine indicator với full SMC pipeline (BOS/CHoCH/OB/FVG/sweep/pool)
-- `packages/smc_bot_webhook/` — FastAPI webhook + 11-gate validator + MT5 file bridge + Telegram/Discord dispatcher
-- `docs/mt5-bridge-setup.md` — MT5 setup guide (existing)
+- `packages/smc_bot_webhook/` — FastAPI webhook + 11-gate validator + Telegram dispatcher
 - `packages/smc_bot_webhook/src/smc_bot_webhook/payload.py` — SMC|v1 payload parser
-- `packages/smc_bot_webhook/src/smc_bot_webhook/mt5_bridge/signal_writer.py` — atomic JSON writer
 
 ❌ **Missing**:
-- Pine script emit JSON payload (currently only `alertcondition` title + message, no side/entry/SL/TP)
-- Cloudflare Tunnel (optional, for public webhook URL)
-- End-to-end test doc
+- Pine script emit JSON payload (currently only `alertcondition` title + message)
+- Optional: Cloudflare Tunnel (for public webhook)
 
-## Architecture (recap from `docs/mt5-bridge-setup.md`)
+## Architecture (simplified)
 
 ```
-[Bot host (Mac / Linux / VPS)]
-  ├── FastAPI webhook (:8000)
-  ├── Telegram dispatcher
-  └── Python signal_writer → writes <outbox>/pending/<sid>.json
-                                ↓ shared folder (SMB / Syncthing / local)
-[MT5 host (Windows / VM / VPS)]
-  └── MQL5 EA (mql5_reader.mq5) → polls pending/ → OrderSend → writes <outbox>/done/<sid>.json
-                                ↓ (same shared folder, polled by bot)
-[Bot webhook background task]
-  └── reads <outbox>/done/ → records execution_log → Telegram confirmation
+┌─────────────────────────────────────────────────┐
+│ TradingView (Cloud)                              │
+│   Pine chart M15                                 │
+│   Alert with webhook URL → POST                  │
+└────────────────┬────────────────────────────────┘
+                 │ HTTP POST
+                 ↓
+┌─────────────────────────────────────────────────┐
+│ Bot host (your machine or VPS)                   │
+│   FastAPI webhook :8000                          │
+│   - parse SMC|v1 payload                        │
+│   - 11-gate validator                            │
+│   - if pass → Telegram send                      │
+└────────────────┬────────────────────────────────┘
+                 │ HTTPS POST
+                 ↓
+┌─────────────────────────────────────────────────┐
+│ Telegram Bot API (cloud)                          │
+│   → User's phone                                 │
+│   🔔 Notification                                │
+└─────────────────────────────────────────────────┘
+
+[User sees notification → opens TradingView → places order manual]
 ```
 
 ## Phases
@@ -57,7 +74,7 @@ End-to-end pipeline:
 ### Phase 1 — Pine emit JSON payload (2-3h, code)
 **Goal**: TradingView alert fires with full SMC|v1 payload (side, entry, SL, TP1/2/3, OB id, BOS id, score).
 
-**Files**:
+**File**:
 - `tradingview/smc-engine-indicator.pine`: replace `alertcondition(rulebookState == "chart-qualified", ...)` with `alert()` call emitting `SMC|v1|...` formatted string
 
 **Pine code pattern** (around line 1216):
@@ -124,58 +141,97 @@ alert("SMC chart-qualified", chartQualifiedJSON)
 
 ---
 
-### Phase 4 — MT5 host setup (2-3h, manual)
-**Goal**: MT5 demo account + EA running + connected to bot.
+### Phase 4 (optional) — VPS + Cloudflare Tunnel (1h, manual)
+**Goal**: Run bot 24/7 on VPS so you don't need your PC always on.
 
-**Setup** (per `docs/mt5-bridge-setup.md`):
-1. Install MT5 on Windows / VPS / VM
-2. Open FTMO demo account (free) at ftmo.com
-3. Compile `packages/smc_bot_webhook/mt5_bridge/mql5_reader.mq5` in MetaEditor
-4. Configure shared folder (SMB / Syncthing / local mount)
-5. Enable AutoTrading in MT5
-6. Run EA on M15 chart of EURUSD
+**Setup** (if needed):
+1. Rent cheap VPS (DigitalOcean $4-6/month, Hetzner €3.79/month, AWS Lightsail $3.50/month)
+2. SSH in, install Python + dependencies, copy code
+3. Run webhook as systemd service: `systemctl enable smc-webhook`
+4. Install cloudflared: `brew install cloudflared` (or apt on Linux)
+5. Login: `cloudflared tunnel login`
+6. Create tunnel: `cloudflared tunnel create smc-bot`
+7. Configure DNS: `cloudflared tunnel route dns smc-bot smc.your-domain.com`
+8. Run: `cloudflared tunnel --url http://localhost:8000 run smc-bot`
+9. Use Cloudflare URL in TradingView alert: `https://smc.your-domain.com/webhook/tradingview`
 
-**Acceptance**:
-- EA polls <outbox>/pending/ every 1 second
-- When pending file appears, EA places OrderSend
-- Writes <outbox>/done/<sid>.json after fill
-
----
-
-### Phase 5 — Cloudflare Tunnel (optional, 1h, manual)
-**Goal**: Public webhook URL without exposing bot host.
-
-**Setup** (if bot runs on home network without public IP):
-1. Install `cloudflared`: `brew install cloudflared`
-2. Login: `cloudflared tunnel login`
-3. Create tunnel: `cloudflared tunnel create smc-bot`
-4. Configure: `cloudflared tunnel route dns smc-bot smc.your-domain.com`
-5. Run: `cloudflared tunnel --url http://localhost:8000 run smc-bot`
-6. Use Cloudflare URL in TradingView alert
-
-**Alternative**: Skip if bot runs on VPS with public IP.
+**Alternative**: If VPS has public IP, skip Cloudflare, use `http://<vps-ip>:8000/webhook/tradingview` directly.
 
 **Acceptance**:
 - TradingView alert reaches bot via Cloudflare URL
 - Latency acceptable (<500ms)
+- Webhook stays up 24/7
 
 ---
 
-### Phase 6 — Live FTMO demo (2-4 weeks, manual)
-**Goal**: Validate trader behavior + bot end-to-end with real demo.
+### Phase 5 — Live manual trade (continuous)
+**Goal**: Validate full pipeline + trader behavior over weeks/months.
 
-**Setup**:
-1. Use FTMO demo account (free) instead of regular broker demo
-2. Risk per trade: 0.55% ($550 on $100K)
-3. Monitor Telegram for trade alerts
-4. Manual override available (close position via MT5 if needed)
-5. Journal trades in `journal/manual_trades_2026.md`
+**Daily workflow**:
+1. Open TradingView EURUSD M15 chart
+2. Pine indicator runs, alerts fire on chart-qualified setups
+3. Receive Telegram notification with entry/SL/TP levels
+4. Open TradingView → place order manual (limit order on Pine's entry level)
+5. Set SL + TP1 + TP2 manually
+6. Journal trade in `journal/manual_trades_2026.md`
 
 **Acceptance**:
-- Bot trades 24/7 without crash
-- Telegram alerts arrive within 5 seconds of Pine signal
-- No missed trades due to downtime
-- Equity curve matches backtest expectations (+~30K/month)
+- Alerts arrive within 5 seconds of Pine signal
+- No missed signals (24/7 monitoring)
+- Trader follows Pine signals consistently (adherence metric)
+- Equity curve matches backtest expectations (+~$30K/month)
+
+---
+
+## Telegram message format
+
+### 1. Trade signal detected
+```
+🟢 SMC SIGNAL — LONG EURUSD
+
+Entry:  1.08500
+SL:     1.07900 (-50 pips, 1.0×ATR)
+TP1:    1.09700 (2R) — close 50%
+TP2:    1.10900 (4R) — close remaining
+
+Score: 4.5/5
+HTF: D=bull H4=bull ✓
+OB id: 42 | BOS id: 17
+
+→ Mở TradingView EURUSD M15, place limit order @ 1.0850
+→ Set SL 1.0790, TP1 1.0970 (50%), TP2 1.1090 (50%)
+
+Time: 2026-09-03 14:30 UTC
+Signal ID: abc123...
+```
+
+### 2. (optional) Order placed confirmation
+```
+✋ ORDER PLACED — manual entry
+
+Pair: EURUSD
+Side: LONG
+Entry: 1.08500
+SL: 1.07900
+TP1: 1.09700 (50%)
+TP2: 1.10900 (50%)
+
+→ Reply /placed in Telegram to log
+```
+
+### 3. (optional) Close confirmation
+```
+✅ TRADE CLOSED — +1.5R (+$825)
+
+Pair: EURUSD
+Side: LONG
+Closed at: TP1 (1.09700)
+P&L: +$550 (gross)
+R-multiple: +1.5R
+Account: $100,825
+
+→ Reply /closed to log
+```
 
 ---
 
@@ -184,19 +240,18 @@ alert("SMC chart-qualified", chartQualifiedJSON)
 | File | Phase | Action |
 |---|---|---|
 | `tradingview/smc-engine-indicator.pine` | 1 | Modify — add `alert()` with JSON payload |
-| `packages/smc_bot_webhook/src/smc_bot_webhook/payload.py` | 1 | Maybe update — verify parser accepts new fields |
-| `docs/pine-webhook-setup.md` | 1,2,3 | Create — step-by-step Pine → Telegram guide |
-| `.env.example` | 3 | Update — add TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID docs |
-| `docs/mt5-bridge-setup.md` | 4 | Already exists — reference |
+| `packages/smc_bot_webhook/src/smc_bot_webhook/payload.py` | 1 | Verify parser accepts new fields |
 | `tests/test_pine_payload.py` | 1 | Create — validate Pine payload format |
+| `docs/pine-telegram-setup.md` | 1,2,3 | Create — step-by-step guide for user |
+| `.env.example` | 3 | Update — add TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID docs |
 
 ## Dependencies
 
 - **Pine Script v6** (TradingView)
 - **FastAPI** (already installed)
 - **Telegram Bot API** (need user to create bot via @BotFather)
-- **Cloudflare Tunnel** (optional, if public webhook needed)
-- **MT5** + MetaEditor (Windows / VPS)
+- **Cloudflare Tunnel** (optional, only if VPS without public IP)
+- **VPS** (optional, for 24/7 uptime)
 
 ## Effort summary
 
@@ -205,31 +260,28 @@ alert("SMC chart-qualified", chartQualifiedJSON)
 | 1 | 2-3h | Code |
 | 2 | 1-2h | Manual test |
 | 3 | 30min | Manual setup |
-| 4 | 2-3h | Manual setup |
-| 5 | 1h | Manual (optional) |
-| 6 | 2-4 weeks | Live validation |
-| **Total manual setup** | **~5-7h** | |
-| **Total automation** | **~3h** | |
+| 4 (optional) | 1h | Manual setup |
+| 5 | Continuous | Manual trade |
+| **Total** | **~4-5h** | |
 
 ## Success criteria
 
-After all 6 phases:
+After all phases:
 - ✅ Pine script fires `alert()` with SMC|v1 JSON payload on chart-qualified
-- ✅ Bot webhook receives payload, validates 11 gates, writes to <outbox>/pending/
-- ✅ MT5 EA reads pending/, places OrderSend on FTMO demo
-- ✅ Bot reads done/, sends Telegram notification ("LONG EURUSD @ 1.0850")
-- ✅ Trade closed → Telegram notification ("CLOSED +1.5R, +$825")
-- ✅ End-to-end latency < 5 seconds (Pine → Telegram)
-- ✅ 2-4 weeks FTMO demo validates full pipeline
-- ✅ Edge verified: equity curve matches backtest expectations
+- ✅ Bot webhook receives payload, validates 11 gates, sends Telegram
+- ✅ User receives Telegram alert within 5 seconds of Pine signal
+- ✅ User can manually execute trade on TradingView within 1 minute
+- ✅ Full pipeline runs 24/7 (if VPS + cloudflare deployed)
+- ✅ Trader follows Pine signals consistently (adherence metric tracked)
 
 ## Risks
 
 - **TradingView alert webhook URL change**: TradingView may change webhook format. Pin to specific TradingView API version in payload parser.
 - **Telegram rate limits**: Free tier ~30 msgs/min to same chat. Bot sends 2-3 msgs/trade, well under limit.
-- **MT5 EA disconnection**: If Windows reboots, EA may stop. Need auto-restart script.
-- **Shared folder sync delay**: SMB/Syncthing may delay file visibility by 1-2 seconds. Acceptable for swing trading.
-- **Pine script errors**: Bad payload breaks webhook. Add JSON validation + reject malformed.
+- **Local bot downtime**: If bot crashes, signals lost. Mitigation: VPS + systemd service.
+- **Network split**: TradingView → bot path broken. Mitigation: VPS with stable connection.
+- **Pine script errors**: Bad payload breaks webhook. Mitigation: JSON validation + reject malformed.
+- **Trader non-adherence**: User may not place order when alert fires. Track adherence in journal.
 
 ## Verification commands
 
@@ -253,7 +305,8 @@ python -c "from smc_bot_webhook.notify.telegram import send; send('test from SMC
 
 ## Out of scope
 
+- MT5 bridge (user trades manual on TradingView)
 - News filter (separate plan)
-- Multi-account (one MT5 → one FTMO demo)
+- Multi-pair alerts (one Telegram message per pair, or one summary)
 - Strategy parameter tuning via live data
 - Adaptive lot sizing based on volatility
