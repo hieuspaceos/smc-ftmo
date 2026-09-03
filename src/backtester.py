@@ -312,6 +312,18 @@ def run_backtest(
     m15_bias_d = _align_to_m15(bias_series_d, df_m15.index)
     m15_bias_h4 = _align_to_m15(bias_series_h4, df_m15.index)
 
+    # Pine parity (bug #10): HTF H4 range wall. 16-bar rolling high/low on H4.
+    # Mirrors Pine "ta.highest(high, 16)" / "ta.lowest(low, 16)".
+    # Used to skip trades whose TP1 would hit the H4 range wall.
+    if not df_h4.empty:
+        h4_high_16 = df_h4['high'].rolling(16).max().shift(1)
+        h4_low_16  = df_h4['low'].rolling(16).min().shift(1)
+        h4_high_s  = h4_high_16.reindex(df_m15.index, method='ffill')
+        h4_low_s   = h4_low_16.reindex(df_m15.index, method='ffill')
+    else:
+        h4_high_s  = pd.Series(float('nan'), index=df_m15.index)
+        h4_low_s   = pd.Series(float('nan'), index=df_m15.index)
+
     # ATR + P/D zone for every M15 bar
     atr_all = calculate_atr(df_m15)
     pd_zones = pd_series(df_m15, lookback=pd_lookback)
@@ -563,6 +575,9 @@ def run_backtest(
             "min_sl_atr": min_sl_atr,
             "max_sl_atr": max_sl_atr,
             "tp_stages": tp_stages,
+            # Pine parity (bug #10): HTF H4 range wall.
+            "htf_h4_range_high": float(h4_high_s.iloc[i]) if pd.notna(h4_high_s.iloc[i]) else None,
+            "htf_h4_range_low":  float(h4_low_s.iloc[i])  if pd.notna(h4_low_s.iloc[i])  else None,
         }
 
         # Update open position

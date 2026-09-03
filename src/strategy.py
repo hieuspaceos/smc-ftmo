@@ -269,6 +269,16 @@ def check_entry(snapshot: Dict) -> Optional[Dict]:
         tp2 = entry - target_rs[1] * risk_per_unit
         tp3 = entry - target_rs[2] * risk_per_unit
 
+    # Pine parity fix (bug #10): HTF wall check. Mirrors Pine
+    # rulebook pipeline — skip trade if target beyond H4 range wall.
+    # Long: TP1 must be < H4 range high. Short: TP1 must be > H4 range low.
+    htf_h4_high = snapshot.get("htf_h4_range_high")
+    htf_h4_low  = snapshot.get("htf_h4_range_low")
+    if htf_h4_high is not None and side == "long" and tp1 >= htf_h4_high:
+        return None
+    if htf_h4_low is not None and side == "short" and tp1 <= htf_h4_low:
+        return None
+
     reasons = list(snapshot.get("reasons", []))
     return {
         "side": side,

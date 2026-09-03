@@ -212,5 +212,62 @@ def test_original_sl_preserved_when_tp1_hit(minimal_config):
     # (don't assert a minimum to avoid brittleness)
 
 
+
+
+def test_htf_wall_check_rejects_trade():
+    """HTF wall check: skip trade if TP1 hits H4 range high (long) or low (short).
+
+    Mirrors Pine rulebook:
+        if not na(htfH4RangeHigh) and targetPrice >= htfH4RangeHigh
+            wallHit := true
+            continue
+    """
+    from src.strategy import check_entry
+    snapshot_base = {
+        "side_request": "long",
+        "score": 5,
+        "entry_allowed": True,
+        "displacement": True,
+        "bias_aligned": True,
+        "sweep_clean": True,
+        "in_pd_zone": True,
+        "first_test": True,
+        "pd_zone": "discount",
+        "ob_top": 1.0850,
+        "ob_bottom": 1.0800,
+        "atr": 0.0050,
+        "close": 1.0850,
+        "pair": "EURUSD",
+        "sl_atr_buffer": 0.2,
+        "min_sl_atr": 0.3,
+        "max_sl_atr": 4.0,
+    }
+    # Long: TP1 = entry + 2R * sl_distance. SL = 1.0800 - 0.2*0.0050 = 1.0790.
+    # sl_distance = 1.0850 - 1.0790 = 0.0060 (1.2 * ATR). TP1 = 1.0850 + 0.012 = 1.097.
+    # Set HTF wall at 1.0965 (below TP1) → should reject.
+    snap_wall_hit = dict(snapshot_base)
+    snap_wall_hit["htf_h4_range_high"] = 1.0965
+    assert check_entry(snap_wall_hit) is None, "HTF wall should reject long trade"
+    # Set HTF wall at 1.0980 (above TP1) → should accept.
+    snap_clear = dict(snapshot_base)
+    snap_clear["htf_h4_range_high"] = 1.0980
+    assert check_entry(snap_clear) is not None, "Clear path should accept"
+    # Set HTF wall = None → should accept (no constraint).
+    snap_none = dict(snapshot_base)
+    snap_none["htf_h4_range_high"] = None
+    snap_none["htf_h4_range_low"] = None
+    assert check_entry(snap_none) is not None, "None HTF should accept"
+    # Short direction: TP1 = entry - 2R * sl_distance. Wall = htf_h4_range_low.
+    snap_short = dict(snapshot_base)
+    snap_short["side_request"] = "short"
+    snap_short["ob_top"] = 1.0850
+    snap_short["ob_bottom"] = 1.0800
+    snap_short["entry_allowed"] = True
+    snap_short["htf_h4_range_low"] = 1.0820  # below TP1 (1.0826)
+    snap_short["htf_h4_range_high"] = None
+    snap_short["pd_zone"] = "premium"
+    assert check_entry(snap_short) is None, "HTF low wall should reject short"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
