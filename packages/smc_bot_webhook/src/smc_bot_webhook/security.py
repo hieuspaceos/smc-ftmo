@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 # TradingView published webhook IP ranges (TradingView Help Center, 2024)
 TRADINGVIEW_IPV4_ALLOWLIST: tuple[str, ...] = (
+    "127.0.0.1",  # local dev (loopback bypass also covers ::1)
     "52.89.214.238",
     "34.212.75.30",
     "54.218.53.128",
@@ -53,6 +54,8 @@ def check_ip_allowlist(client_ip: str | None, allowlist: tuple[str, ...] = TRADI
     """Return True iff client_ip is in allowlist.
 
     Empty/None client_ip → False (deny). Defensive: any parse error → deny.
+    Loopback (127.0.0.1, ::1) is ALWAYS allowed so local dev/test scripts work
+    without users having to add themselves to the allowlist.
     """
     if not client_ip:
         return False
@@ -60,6 +63,8 @@ def check_ip_allowlist(client_ip: str | None, allowlist: tuple[str, ...] = TRADI
         candidate = ipaddress.ip_address(client_ip.strip())
     except (ValueError, AttributeError):
         return False
+    if str(candidate) in ("127.0.0.1", "::1"):
+        return True
     return str(candidate) in allowlist
 
 
