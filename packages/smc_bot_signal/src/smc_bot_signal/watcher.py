@@ -61,7 +61,20 @@ class Watcher:
             if not self.state.should_notify(payload.signal_id):
                 logger.info("dedup skip signal_id=%s", payload.signal_id)
                 continue
-            msg_id = self.notifier.send(payload, m15_data=df)
+            try:
+                msg_id = self.notifier.send(payload, m15_data=df)
+            except Exception:
+                logger.exception(
+                    "notify failed signal_id=%s; will retry later",
+                    payload.signal_id,
+                )
+                continue
+            if msg_id is None:
+                logger.warning(
+                    "notify returned no message_id signal_id=%s; not recording dedup",
+                    payload.signal_id,
+                )
+                continue
             self.state.record_alert(
                 payload.signal_id,
                 symbol=payload.symbol,

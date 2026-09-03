@@ -34,7 +34,7 @@ def _payload() -> AlertPayload:
 
 def test_logging_notifier() -> None:
     n = LoggingNotifier()
-    assert n.send(_payload()) is None
+    assert n.send(_payload()) == 0
     assert len(n.sent) == 1
 
 

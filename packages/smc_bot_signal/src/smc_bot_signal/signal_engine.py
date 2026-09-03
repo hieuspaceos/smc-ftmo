@@ -13,11 +13,20 @@ from smc_bot_webhook.payload import AlertPayload
 logger = logging.getLogger("smc_bot_signal.engine")
 
 
+def _as_utc_ts(value: object) -> pd.Timestamp:
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        return ts.tz_localize("UTC")
+    return ts.tz_convert("UTC")
+
+
 @dataclass
 class SignalEngine:
     cfg: SignalBotConfig
 
-    def scan(self, df: pd.DataFrame, symbol: str, *, timeframe: str | None = None) -> list[AlertPayload]:
+    def scan(
+        self, df: pd.DataFrame, symbol: str, *, timeframe: str | None = None
+    ) -> list[AlertPayload]:
         """Detect first-touch OB signals on the latest closed bar."""
         if df is None or df.empty or len(df) < 30:
             return []
@@ -51,9 +60,7 @@ class SignalEngine:
             logger.exception("engine pipeline failed symbol=%s", symbol)
             return []
 
-        last_ts = pd.Timestamp(df.index[-1])
-        if last_ts.tzinfo is None:
-            last_ts = last_ts.tz_localize("UTC")
+        last_ts = _as_utc_ts(df.index[-1])
         close = float(df["close"].iloc[-1])
         atr_last = atr.iloc[-1]
         if pd.isna(atr_last) or float(atr_last) <= 0:
@@ -67,20 +74,27 @@ class SignalEngine:
             ft = ob.first_touch_timestamp
             if ft is None:
                 continue
-            ft_ts = pd.Timestamp(ft)
-            if ft_ts.tzinfo is None:
-                ft_ts = ft_ts.tz_localize("UTC")
-            if ft_ts != last_ts:
+            ft_ts = _as_utc_ts(ft)
+            # Second resolution — engine/index may differ in ns.
+            if int(ft_ts.timestamp()) != int(last_ts.timestamp()):
                 continue
 
-            payload = self._ob_to_payload(
-                ob,
-                symbol=symbol.upper(),
-                tf=tf,
-                last_ts=last_ts,
-                close=close,
-                atr_v=atr_v,
-            )
+            try:
+                payload = self._ob_to_payload(
+                    ob,
+                    symbol=symbol.upper(),
+                    tf=tf,
+                    last_ts=last_ts,
+                    close=close,
+                    atr_v=atr_v,
+                )
+            except Exception:
+                logger.exception(
+                    "payload build failed symbol=%s ob_id=%s",
+                    symbol,
+                    getattr(ob, "id", None),
+                )
+                continue
             if payload is not None:
                 out.append(payload)
         return out

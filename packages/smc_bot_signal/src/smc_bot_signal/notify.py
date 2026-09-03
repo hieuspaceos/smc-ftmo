@@ -48,7 +48,7 @@ class LoggingNotifier:
             payload.sl,
             payload.signal_id,
         )
-        return None
+        return 0
 
 
 @dataclass

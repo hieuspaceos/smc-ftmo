@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import pandas as pd
 
 from smc_bot_signal.config import SignalBotConfig
+
+logger = logging.getLogger("smc_bot_signal.feed")
 
 _OHLC = ("open", "high", "low", "close")
 
@@ -122,8 +125,17 @@ class CsvFeed:
         return out
 
 
-def feed_from_config(cfg: SignalBotConfig, *, frames: dict[str, pd.DataFrame] | None = None) -> MarketDataFeed:
-    """Build a feed from config. ``auto`` prefers csv path, else ctrader, else memory."""
+def feed_from_config(
+    cfg: SignalBotConfig,
+    *,
+    frames: dict[str, pd.DataFrame] | None = None,
+    transport: Any | None = None,
+) -> MarketDataFeed:
+    """Build a feed from config.
+
+    ``auto``: csv path → CSV; else explicit ``transport`` → cTrader; else memory.
+    Credentials alone never create a live feed (Open API session must inject transport).
+    """
     mode = (cfg.feed_mode or "auto").lower()
     if mode == "memory":
         return InMemoryFeed(frames)
@@ -131,13 +143,24 @@ def feed_from_config(cfg: SignalBotConfig, *, frames: dict[str, pd.DataFrame] | 
         if not cfg.csv_path:
             raise RuntimeError("SMC_SIGNAL_CSV_PATH required for csv feed")
         return CsvFeed(cfg.csv_path)
-    if mode in ("ctrader", "auto"):
+    if mode == "ctrader":
         from smc_bot_signal.ctrader_client import CTraderFeed
 
-        if mode == "ctrader" or (
-            cfg.ctrader_client_id and cfg.ctrader_access_token and cfg.ctrader_account_id
-        ):
-            return CTraderFeed(cfg)
-        if mode == "ctrader":
-            raise RuntimeError("cTrader credentials incomplete for feed_mode=ctrader")
+        if transport is None:
+            raise RuntimeError(
+                "feed_mode=ctrader requires an Open API transport "
+                "(wire LiveOpenApiTransport after connect; see docs/deploy-mac-mini-ctrader.md)"
+            )
+        return CTraderFeed(cfg, transport=transport)
+    if mode == "auto" and transport is not None:
+        from smc_bot_signal.ctrader_client import CTraderFeed
+
+        return CTraderFeed(cfg, transport=transport)
+    if mode == "auto" and (
+        cfg.ctrader_client_id and cfg.ctrader_access_token and cfg.ctrader_account_id
+    ):
+        logger.warning(
+            "cTrader credentials present but no transport injected; "
+            "falling back to InMemoryFeed (idle until CSV/transport wired)"
+        )
     return InMemoryFeed(frames)

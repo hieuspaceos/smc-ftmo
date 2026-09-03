@@ -43,15 +43,13 @@ See plan: `plans/260903-1620-mac-mini-ctrader-signal-bot/`.
 ## Run
 
 ```bash
-# dry-run offline (memory feed empty → idle)
 SMC_SIGNAL_FEED_MODE=memory SMC_SIGNAL_DRY_RUN=1 python -m smc_bot_signal
-
 # or
 smc-signal
 ```
 
-Live cTrader: set credentials, `SMC_SIGNAL_FEED_MODE=ctrader`, inject transport
-after OpenApiPy connect (Phase 02 live wiring — see plan phase-02/05).
+Live cTrader: set credentials, inject OpenApiPy `transport` into `feed_from_config(..., transport=...)`.
+See `docs/deploy-mac-mini-ctrader.md`.
 
 ## Tests
 
@@ -70,3 +68,10 @@ pytest packages/smc_bot_signal/tests -q
 | `signal_engine.py` | OB first-touch → AlertPayload |
 | `notify.py` | dry-run + Telegram |
 | `watcher.py` | poll loop |
+
+## Known limits (v0.1)
+
+- **Live Open API session** not auto-wired: inject `transport=` after OpenApiPy auth.
+- **Symbol allowlist** in `AlertPayload` is EURUSD-only (webhook model). Multi-pair needs allowlist change.
+- **Spotware trendbar deltas**: transport must pass **absolute** OHLC prices (decode scaled ints upstream).
+- Full Pine 11-gate rulebook not ported — v1 = OB first-touch + SL/TP filters from `config.yaml`.
