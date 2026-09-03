@@ -45,7 +45,9 @@ strategy:
   # Python backtest confirms filter is no-op at these levels.
   min_sl_atr: 0.3
   max_sl_atr: 4.0
-
+  # Pine parity: rulebookEntryProximityAtr (default 1.5).
+  # Reject trade if entry > this many ATRs from current close.
+  rulebook_entry_proximity_atr: 1.5
   # Partial TP: 40% tại 2R, 30% tại 3R, 30% tại 4R
   partial_tp:
     - {pct: 0.40, r: 2.0, move_sl_to: entry}   # BE sau khi hit 2R

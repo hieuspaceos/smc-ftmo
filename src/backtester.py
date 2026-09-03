@@ -173,6 +173,8 @@ def run_backtest(
     sl_atr_buffer = float(strat_cfg.get("sl_atr_buffer", config.get("sl_atr_buffer", 0.2)))
     min_sl_atr = float(strat_cfg.get("min_sl_atr", config.get("min_sl_atr", 0.0)))
     max_sl_atr = float(strat_cfg.get("max_sl_atr", config.get("max_sl_atr", 99.0)))
+    rulebook_entry_proximity_atr = float(
+        strat_cfg.get("rulebook_entry_proximity_atr", config.get("rulebook_entry_proximity_atr", 1.5)))
     displacement_atr_mult = float(
         strat_cfg.get("displacement_atr_mult", config.get("displacement_atr_mult", 1.5))
     )
@@ -574,7 +576,10 @@ def run_backtest(
             "sl_atr_buffer": sl_atr_buffer,
             "min_sl_atr": min_sl_atr,
             "max_sl_atr": max_sl_atr,
+            "rulebook_entry_proximity_atr": rulebook_entry_proximity_atr,
             "tp_stages": tp_stages,
+            # Pine parity: rulebookEntryProximityAtr (default 1.5).
+            # Mirrors Pine "rulebookEntryProximityAtr" input.
             # Pine parity (bug #10): HTF H4 range wall.
             "htf_h4_range_high": float(h4_high_s.iloc[i]) if pd.notna(h4_high_s.iloc[i]) else None,
             "htf_h4_range_low":  float(h4_low_s.iloc[i])  if pd.notna(h4_low_s.iloc[i])  else None,

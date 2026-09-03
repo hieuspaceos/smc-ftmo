@@ -269,5 +269,47 @@ def test_htf_wall_check_rejects_trade():
     assert check_entry(snap_short) is None, "HTF low wall should reject short"
 
 
+
+
+def test_entry_proximity_config_aware():
+    """rulebook_entry_proximity_atr controls max OB-to-price distance.
+
+    Default 1.5 ATR (Pine default). Override to test custom.
+    """
+    from src.strategy import check_entry
+    base = {
+        "side_request": "long",
+        "score": 5,
+        "entry_allowed": True,
+        "displacement": True,
+        "bias_aligned": True,
+        "sweep_clean": True,
+        "in_pd_zone": True,
+        "first_test": True,
+        "pd_zone": "discount",
+        "ob_top": 1.0850,
+        "ob_bottom": 1.0800,
+        "atr": 0.0050,
+        "pair": "EURUSD",
+        "sl_atr_buffer": 0.2,
+        "min_sl_atr": 0.3,
+        "max_sl_atr": 4.0,
+    }
+    # At default 1.5 ATR, entry at 1.0925 (1.5 ATR from close 1.0850) is borderline.
+    # close 1.0860 -> distance 0.0060 = 1.2 ATR. Accept.
+    snap_close = dict(base)
+    snap_close["close"] = 1.0860
+    assert check_entry(snap_close) is not None, "close entry should accept (1.2 ATR)"
+    # close 1.1000 -> distance 0.0150 = 3.0 ATR. Reject (>1.5).
+    snap_far = dict(base)
+    snap_far["close"] = 1.1000
+    assert check_entry(snap_far) is None, "far entry should reject (3.0 ATR > 1.5)"
+    # Override to 5.0 ATR threshold → far entry now accept.
+    snap_far_wide = dict(base)
+    snap_far_wide["close"] = 1.1000
+    snap_far_wide["rulebook_entry_proximity_atr"] = 5.0
+    assert check_entry(snap_far_wide) is not None, "wide threshold should accept"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

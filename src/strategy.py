@@ -231,9 +231,11 @@ def check_entry(snapshot: Dict) -> Optional[Dict]:
     else:
         entry = float(ob_bottom)
         sl = float(ob_top) + buffer
-    # Price must be near the OB edge (within 1.5 ATR) — no distant entries
+    # Price must be near the OB edge (within rulebookEntryProximityAtr ATR) — no distant entries.
+    # Mirrors Pine rulebook input. Default 1.5 ATR (Pine default).
+    rulebook_entry_proximity_atr = float(snapshot.get("rulebook_entry_proximity_atr", 1.5))
     bar_close = snapshot.get("close")
-    if bar_close is not None and abs(float(bar_close) - entry) > 1.5 * atr:
+    if bar_close is not None and abs(float(bar_close) - entry) > rulebook_entry_proximity_atr * atr:
         return None
 
     if sl == entry:
