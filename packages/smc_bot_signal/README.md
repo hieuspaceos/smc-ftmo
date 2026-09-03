@@ -1,6 +1,6 @@
 # smc_bot_signal
 
-cTrader Open API → `smc_engine` → Telegram alerts (manual execution).
+cTrader Open API → `smc_engine` + **rule-book gates** → Telegram (manual exec).
 
 Designed for **Mac mini M4** 24/7. No MT5. No auto-trade.
 
@@ -11,67 +11,36 @@ pip install -e packages/smc_engine \
             -e packages/smc_bot_core \
             -e packages/smc_bot_webhook \
             -e packages/smc_bot_signal
-
-# optional live cTrader deps
-pip install -e "packages/smc_bot_signal[ctrader]"
 ```
 
-## Configure
+## Entry gate (fail-closed)
 
-Put secrets in `~/.smc-bot.env` (never commit):
+Matches `journal/rule-book.md` / `src/confluence.py`:
 
-```bash
-CTRADER_CLIENT_ID=
-CTRADER_CLIENT_SECRET=
-CTRADER_ACCESS_TOKEN=
-CTRADER_REFRESH_TOKEN=
-CTRADER_ACCOUNT_ID=
-CTRADER_HOST=demo.ctraderapi.com
+1. OB first-touch on last closed M15 bar (expansion-qualified BOS OB)
+2. **Displacement** required (1.5× ATR)
+3. **D + H4 bias aligned** with trade side (resampled from M15)
+4. **Score ≥ 4** (disp + bias + first_test + P/D or sweep)
+5. SL buffer 0.2×ATR, proximity ≤ 1.5×ATR, SL in [0.3, 4.0] ATR
+6. TP ladder 2R / 3R / 4R
 
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
-
-SMC_SIGNAL_SYMBOLS=EURUSD
-SMC_SIGNAL_TF=M15
-SMC_SIGNAL_FEED_MODE=memory   # memory | csv | ctrader | auto
-SMC_SIGNAL_DRY_RUN=1
-SMC_SIGNAL_DB_PATH=output/signal_state.db
-```
-
-See plan: `plans/260903-1620-mac-mini-ctrader-signal-bot/`.
+If bias not aligned → **no Telegram** (stand aside).
 
 ## Run
 
 ```bash
+# secrets in ~/.smc-bot.env
 SMC_SIGNAL_FEED_MODE=memory SMC_SIGNAL_DRY_RUN=1 python -m smc_bot_signal
-# or
-smc-signal
-```
-
-Live cTrader: set credentials, inject OpenApiPy `transport` into `feed_from_config(..., transport=...)`.
-See `docs/deploy-mac-mini-ctrader.md`.
-
-## Tests
-
-```bash
 pytest packages/smc_bot_signal/tests -q
 ```
 
-## Layout
-
-| Module | Role |
-|--------|------|
-| `config.py` | env settings |
-| `state.py` | SQLite dedup |
-| `data_feed.py` | Protocol + CSV/memory |
-| `ctrader_client.py` | trendbar transport + CTraderFeed |
-| `signal_engine.py` | OB first-touch → AlertPayload |
-| `notify.py` | dry-run + Telegram |
-| `watcher.py` | poll loop |
-
 ## Known limits (v0.1)
 
-- **Live Open API session** not auto-wired: inject `transport=` after OpenApiPy auth.
-- **Symbol allowlist** in `AlertPayload` is EURUSD-only (webhook model). Multi-pair needs allowlist change.
-- **Spotware trendbar deltas**: transport must pass **absolute** OHLC prices (decode scaled ints upstream).
-- Full Pine 11-gate rulebook not ported — v1 = OB first-touch + SL/TP filters from `config.yaml`.
+- Live Open API transport not auto-wired yet
+- EURUSD only (`AlertPayload` allowlist)
+- HTF bias from M15 **resample**, not native H4/D broker bars
+- Sweep not scored yet (`sweep_clean=False`) — need P/D for score 4 if no sweep
+- Session filter (London/NY) not enforced
+- **Always confirm on cTrader chart before order**
+
+Plan: `plans/260903-1620-mac-mini-ctrader-signal-bot/`
