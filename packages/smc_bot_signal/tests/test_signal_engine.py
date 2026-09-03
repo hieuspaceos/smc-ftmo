@@ -24,9 +24,8 @@ def test_ob_to_payload_long_levels() -> None:
             min_sl_atr=0.1,
             max_sl_atr=10.0,
             entry_proximity_atr=5.0,
-            tp1_r=2.0,
-            tp2_r=3.0,
-            tp3_r=4.0,
+            scale_in_r=2.0,
+            final_tp_r=4.0,
         )
     )
     ob = SimpleNamespace(

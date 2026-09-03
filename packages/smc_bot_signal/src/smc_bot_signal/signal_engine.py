@@ -133,23 +133,44 @@ class SignalEngine:
         bias_h4 = _detect_tf_bias(
             _ohlc_resample(df, "4h"), swing_length=self.cfg.htf_swing_length
         )
-        mode = (self.cfg.bias_mode or "strict").lower()
+        mode = (self.cfg.bias_mode or "d1_with_h4_filter").lower()
         bias_side: str | None = None
         if mode == "h4_only":
             # Trade with H4; block only if Daily is hard counter-trend.
+            # Fallback: when H4 has not produced a bias yet (warm-up), use D alone.
             if bias_h4 == "bull" and bias_d != "bear":
                 bias_side = "long"
             elif bias_h4 == "bear" and bias_d != "bull":
+                bias_side = "short"
+            elif bias_h4 is None and bias_d == "bull":
+                bias_side = "long"
+            elif bias_h4 is None and bias_d == "bear":
                 bias_side = "short"
         elif mode == "any":
             if bias_h4 == "bull" or bias_d == "bull":
                 bias_side = "long"
             elif bias_h4 == "bear" or bias_d == "bear":
                 bias_side = "short"
-        else:  # strict D+H4
+        elif mode == "strict":
+            # Legacy: D and H4 must agree (both same direction).
             if bias_d == "bull" and bias_h4 == "bull":
                 bias_side = "long"
             elif bias_d == "bear" and bias_h4 == "bear":
+                bias_side = "short"
+        else:
+            # Default / "d1_with_h4_filter": D1 is primary; H4 only blocks when
+            # it is hard counter-trend. Rationale:
+            #   - D1 closes at 00:00 UTC, so by M15 scan time it is yesterday's
+            #     closed candle and stable for the whole day.
+            #   - H4 is intrabar — it can flip several times per day. Forcing D+H4
+            #     strict agreement causes the bot to stand aside for hours at a
+            #     time whenever H4 disagrees with D1, even though D1 has not moved.
+            #   - With this rule, the bot trades with D1's bias unless H4 has
+            #     explicitly flipped against it. If D1 is unknown (warm-up),
+            #     we stand aside.
+            if bias_d == "bull" and bias_h4 != "bear":
+                bias_side = "long"
+            elif bias_d == "bear" and bias_h4 != "bull":
                 bias_side = "short"
         if bias_side is None and self.cfg.require_bias_aligned:
             logger.info(
@@ -161,14 +182,45 @@ class SignalEngine:
             )
 
         out: list[AlertPayload] = []
+        last_pos = len(df) - 1
+        lookback = max(1, int(self.cfg.scan_lookback_bars))
         for ob in obs.events:
-            if not ob.is_first_test_at(last_ts):
-                continue
             ft = ob.first_touch_timestamp
-            if ft is None:
+            untouched_first_test = (
+                ft is None
+                and ob.invalidation_timestamp is None
+                and ob.expiry_timestamp is None
+                and ob.activation_pos <= last_pos
+                and (last_pos - ob.activation_pos) <= lookback
+            )
+            recent_first_test = False
+            if ft is not None:
+                try:
+                    ft_pos = df.index.get_loc(_as_utc_ts(ft))
+                    if 0 <= (last_pos - ft_pos) <= lookback:
+                        recent_first_test = True
+                except KeyError:
+                    recent_first_test = (
+                        int(_as_utc_ts(ft).timestamp()) == int(last_ts.timestamp())
+                    )
+
+            if not (untouched_first_test or recent_first_test):
                 continue
-            if int(_as_utc_ts(ft).timestamp()) != int(last_ts.timestamp()):
-                continue
+            # Skip OBs whose lifecycle ended before the lookback window.
+            if ob.invalidation_timestamp is not None:
+                try:
+                    inv_pos = df.index.get_loc(_as_utc_ts(ob.invalidation_timestamp))
+                    if (last_pos - inv_pos) > lookback:
+                        continue
+                except KeyError:
+                    pass
+            if ob.expiry_timestamp is not None:
+                try:
+                    exp_pos = df.index.get_loc(_as_utc_ts(ob.expiry_timestamp))
+                    if (last_pos - exp_pos) > lookback:
+                        continue
+                except KeyError:
+                    pass
 
             side = "long" if ob.direction == "bullish" else "short"
             if ob.direction not in ("bullish", "bearish"):
@@ -267,19 +319,36 @@ class SignalEngine:
         sl_atr = risk / atr_v
         if sl_atr < self.cfg.min_sl_atr or sl_atr > self.cfg.max_sl_atr:
             return None
-        # Absolute pip floor (EURUSD live: >= 12 pips)
-        pip_size = 0.01 if symbol.upper().startswith("XAU") else 0.0001
-        if symbol.upper().startswith("BTC"):
+        # Absolute pip floor — per-symbol (EURUSD 17, XAUUSD 400, BTCUSD 50).
+        sym = symbol.upper()
+        if sym.startswith("XAU"):
+            pip_size = 0.01
+        elif sym.startswith("BTC"):
             pip_size = 1.0
-        if self.cfg.min_sl_pips > 0 and (risk / pip_size) < self.cfg.min_sl_pips:
+        else:
+            pip_size = 0.0001  # FX default
+        sl_pips = risk / pip_size
+        # Look up per-symbol floor; fall back to first map entry, then 0.
+        floor = 0.0
+        if self.cfg.min_sl_pips_map:
+            for key, val in self.cfg.min_sl_pips_map.items():
+                if sym.startswith(key):
+                    floor = float(val)
+                    break
+            else:
+                # No exact match — use the first declared floor as a safe default.
+                floor = float(next(iter(self.cfg.min_sl_pips_map.values())))
+        if floor > 0 and sl_pips < floor:
             return None
         if abs(close - entry) > self.cfg.entry_proximity_atr * atr_v:
             return None
-
+        # Design A scale-in only: tp1 = scale-in trigger (2R), tp2 = final TP (4R).
+        # tp3 is the legacy ladder slot; left as 0.0 to keep AlertPayload shape
+        # (webhook validator parses all 3 fields).
         sign = 1.0 if is_long else -1.0
-        tp1 = entry + sign * self.cfg.tp1_r * risk
-        tp2 = entry + sign * self.cfg.tp2_r * risk
-        tp3 = entry + sign * self.cfg.tp3_r * risk
+        tp1 = entry + sign * self.cfg.scale_in_r * risk
+        tp2 = entry + sign * self.cfg.final_tp_r * risk
+        tp3 = entry  # unused: ladder disabled per user direction (Design A scale-in).
 
         return AlertPayload(
             prefix="SMC",

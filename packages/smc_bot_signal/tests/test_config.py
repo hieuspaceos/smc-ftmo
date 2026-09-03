@@ -16,7 +16,8 @@ def test_from_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = SignalBotConfig.from_env()
     assert cfg.symbols == ("EURUSD",)
     assert cfg.timeframe == "M15"
-    assert cfg.tp1_r == 2.0
+    assert cfg.scale_in_r == 2.0
+    assert cfg.final_tp_r == 4.0
     assert cfg.dry_run is False
 
 
