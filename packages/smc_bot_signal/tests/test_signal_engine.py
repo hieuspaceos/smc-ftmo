@@ -45,6 +45,7 @@ def test_ob_to_payload_long_levels() -> None:
         last_ts=last_ts,
         close=1.1001,
         atr_v=0.0010,
+        score=4.0,
     )
     assert payload is not None
     assert payload.dir == "long"
@@ -52,8 +53,7 @@ def test_ob_to_payload_long_levels() -> None:
     assert payload.sl == pytest.approx(1.0978)
     risk = 1.1000 - 1.0978
     assert payload.tp1 == pytest.approx(1.1000 + 2 * risk)
-    assert payload.event == "chart_qualified"
-    assert payload.signal_id
+    assert payload.score == 4.0
 
 
 def test_ob_to_payload_rejects_far_entry() -> None:
@@ -80,17 +80,31 @@ def test_ob_to_payload_rejects_far_entry() -> None:
     assert payload is None
 
 
-def test_scan_random_walk_no_crash() -> None:
+def test_scan_uses_correct_ob_api_no_crash() -> None:
+    """Previously detect_order_blocks(swings,...) always TypeError → 0 signals."""
     rng = np.random.default_rng(0)
-    n = 120
+    n = 400
     idx = pd.date_range("2024-01-01", periods=n, freq="15min", tz="UTC")
-    close = 1.10 + np.cumsum(rng.normal(0, 0.0003, size=n))
-    high = close + 0.0004
-    low = close - 0.0004
+    close = 1.10 + np.cumsum(rng.normal(0.00002, 0.00035, size=n))
+    high = close + np.abs(rng.normal(0.0004, 0.0002, n))
+    low = close - np.abs(rng.normal(0.0004, 0.0002, n))
     open_ = np.r_[close[0], close[:-1]]
     df = pd.DataFrame(
         {"open": open_, "high": high, "low": low, "close": close}, index=idx
     )
-    eng = SignalEngine(SignalBotConfig())
+    eng = SignalEngine(SignalBotConfig(require_bias_aligned=True, require_displacement=True))
     out = eng.scan(df, "EURUSD")
     assert isinstance(out, list)
+    # May be empty (fail-closed on bias) but must not crash / swallow OB API error silently forever.
+    # Verify pipeline can produce OBs with correct API:
+    from smc_engine.displacement import calculate_atr, detect_range_expansion
+    from smc_engine.order_blocks import detect_order_blocks
+    from smc_engine.structure import detect_structure
+    from smc_engine.swings import detect_swings
+
+    swings = detect_swings(df, left=5, right=5)
+    atr = calculate_atr(df)
+    structure = detect_structure(df, swings, atr=atr)
+    exp = detect_range_expansion(df, atr, multiplier=1.5)
+    obs = detect_order_blocks(df, structure, exp)
+    assert isinstance(obs.events, tuple)

@@ -54,8 +54,16 @@ class SignalBotConfig:
     poll_interval_seconds: int = 60
     dry_run: bool = False
 
+    # M15 swings (left/right). swing_length=10 → 5/5 matches config.yaml.
     swing_left: int = 5
     swing_right: int = 5
+    htf_swing_length: int = 10
+
+    # Rule-book / config.yaml aligned
+    displacement_atr_mult: float = 1.5
+    min_confluence_score: int = 4
+    require_displacement: bool = True
+    require_bias_aligned: bool = True
     sl_atr_buffer: float = 0.2
     min_sl_atr: float = 0.3
     max_sl_atr: float = 4.0
@@ -100,6 +108,11 @@ class SignalBotConfig:
             dry_run=_env_bool("SMC_SIGNAL_DRY_RUN", False),
             swing_left=_env_int("SMC_SIGNAL_SWING_LEFT", 5),
             swing_right=_env_int("SMC_SIGNAL_SWING_RIGHT", 5),
+            htf_swing_length=_env_int("SMC_SIGNAL_HTF_SWING_LENGTH", 10),
+            displacement_atr_mult=_env_float("SMC_SIGNAL_DISP_ATR_MULT", 1.5),
+            min_confluence_score=_env_int("SMC_SIGNAL_MIN_SCORE", 4),
+            require_displacement=_env_bool("SMC_SIGNAL_REQUIRE_DISP", True),
+            require_bias_aligned=_env_bool("SMC_SIGNAL_REQUIRE_BIAS", True),
             sl_atr_buffer=_env_float("SMC_SIGNAL_SL_ATR_BUFFER", 0.2),
             min_sl_atr=_env_float("SMC_SIGNAL_MIN_SL_ATR", 0.3),
             max_sl_atr=_env_float("SMC_SIGNAL_MAX_SL_ATR", 4.0),
