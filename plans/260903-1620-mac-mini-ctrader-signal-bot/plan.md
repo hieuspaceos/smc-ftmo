@@ -38,14 +38,8 @@ Không auto-trade · không MT5 · không VPS.
 | Rule-book gate (disp + D/H4 bias + score≥4) | **done** |
 | `min_sl_atr` / `max_sl_atr` in multipair scripts | **done** |
 | **`min_sl_pips` EURUSD≥10** (strategy + backtest + bot) | **done** |
-| 10y backtest EUR+XAU same config + pip report | **done** (baseline); re-run with pip floor optional/in flight |
-| Live cTrader OpenApiPy connect | **not done** |
-
-## Phases
-
-| # | Phase | Status | Detail |
-|---|--------|--------|--------|
-| 01 | Package scaffold + config + state | **done** | [phase-01](./phase-01-package-scaffold-config-state.md) |
+| 10y backtest EUR+XAU **with** pip floor | **done** — EUR 125 tr min SL 10.06; XAU 560 tr min 100.5 |
+| Live cTrader OpenApiPy connect | **not done** (Open API app still **Submitted**) |
 | 02 | Data feed + cTrader client | **done** (mock/live hook) | [phase-02](./phase-02-data-feed-ctrader-client.md) |
 | 03 | Signal engine + watcher | **done** + rulebook | [phase-03](./phase-03-signal-engine-watcher.md) |
 | 04 | Telegram notify + dry-run | **done** | [phase-04](./phase-04-telegram-notify.md) |
