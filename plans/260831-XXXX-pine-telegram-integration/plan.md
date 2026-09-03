@@ -39,6 +39,7 @@ End-to-end pipeline:
 
 ❌ **Missing**:
 - Pine script emit JSON payload (currently only `alertcondition` title + message)
+- Python SMC engine validation layer (re-compute signal as defense-in-depth)
 - Optional: Cloudflare Tunnel (for public webhook)
 
 ## Architecture (simplified)
@@ -102,6 +103,117 @@ alert("SMC chart-qualified", chartQualifiedJSON)
 - Pine alert fires when `bestObId != bestObId[1]` (new chart-qualified setup)
 - Payload contains all required SMC|v1 fields
 - Payload parsable by `payload.parse_smc_v1_payload()`
+
+---
+
+### Phase 1.5 — Python SMC engine validation layer (4-5h, code)
+**Goal**: Defense-in-depth. Re-compute Pine signal via Python SMC engine on M15 data, add validation tag to Telegram message. NEVER block the signal — validation only annotates.
+
+**Critical design**: Validation is an **annotation**, NOT a gate.
+- 11-gate validator (existing) decides whether to send Telegram
+- Python SMC validator (new) only adds a tag (✅ matched / ⚠️ diverge / ⚠️ skipped)
+- Telegram NEVER blocked by validation result — user sees Pine signal + Python check
+
+**File** (NEW):
+- `packages/smc_bot_webhook/src/smc_bot_webhook/smc_validator.py`
+
+**Validator API**:
+```python
+@dataclass
+class ValidationResult:
+    matched: bool | None   # True=match, False=diverge, None=unable to validate
+    pine_signal: dict
+    python_signal: dict | None
+    diff: dict
+    reason: str
+
+def validate_pine_signal(pine_payload, m15_data, tolerance_pips=5, timeout=2.0):
+    """Run Python engine, compare with Pine. Always returns; never raises."""
+    try:
+        swings = detect_swings(m15_data, left=5, right=5)
+        atr = calculate_atr(m15_data)
+        structure = detect_structure(m15_data, swings, atr=atr)
+        obs = detect_order_blocks(m15_data, swings, structure, atr=atr)
+
+        candidates = [ob for ob in obs
+                     if ob.id == pine_payload["ob_id"]
+                     and ob.direction == pine_payload["side"]]
+        if not candidates:
+            return ValidationResult(matched=None, reason="OB id not found")
+
+        ob = candidates[0]
+        py_entry = ob.top if pine_payload["side"] == "long" else ob.bottom
+        entry_diff_pips = abs(py_entry - pine_payload["entry"]) * pip_multiplier
+        side_match = (ob.direction == pine_payload["side"])
+        entry_match = (entry_diff_pips <= tolerance_pips)
+        matched = side_match and entry_match
+
+        return ValidationResult(
+            matched=matched,
+            python_signal={"side": ob.direction, "entry": py_entry, ...},
+            diff={"entry_pips": entry_diff_pips, "side_match": side_match},
+            reason="matched" if matched else f"entry differs by {entry_diff_pips:.1f} pips"
+        )
+    except TimeoutError:
+        return ValidationResult(matched=None, reason="timeout")
+    except Exception as e:
+        return ValidationResult(matched=None, reason=f"error: {e}")
+```
+
+**Result states (3, not just 2)**:
+- matched=True  → Pine + Python agree
+- matched=False → Pine + Python disagree (diverge)
+- matched=None → unable to validate (OB not found / timeout / error)
+
+All 3 states still send Telegram with appropriate tag.
+
+**Config flag** (add to config.yaml):
+```yaml
+pine_integration:
+  validate_pine_signal: true
+  validation_tolerance_pips: 5
+  validation_timeout_seconds: 2.0
+```
+
+**Telegram message variants**:
+
+Matched (3-state default):
+```
+✅ SMC SIGNAL — LONG EURUSD
+✓ Pine ✓ Python — validated
+
+Entry:  1.08500
+SL:     1.07900
+...
+```
+
+Mismatched (diverge):
+```
+⚠️ SMC SIGNAL — LONG EURUSD
+⚠️ Pine vs Python diverge
+
+Pine:    entry=1.08500 score=4.5
+Python:  entry=1.08520 score=N/A
+Diff:    entry +2 pips (tolerance 5)
+
+→ Verify on chart
+```
+
+Validation skipped (timeout/error):
+```
+✅ SMC SIGNAL — LONG EURUSD
+⚠️ validation skipped (timeout/error)
+
+Entry:  1.08500
+...
+```
+
+**Acceptance**:
+- Validation adds <500ms latency
+- Telegram message always includes validation tag when validate_pine_signal=true
+- Config flag false disables validation (fallback to current behavior)
+- Tests cover: matched, diverged (entry), diverged (side), OB not found, timeout
+
 
 ---
 
@@ -185,9 +297,10 @@ alert("SMC chart-qualified", chartQualifiedJSON)
 
 ## Telegram message format
 
-### 1. Trade signal detected
+### 1. Trade signal detected (Pine + Python validated)
 ```
 🟢 SMC SIGNAL — LONG EURUSD
+✓ Pine ✓ Python — validated
 
 Entry:  1.08500
 SL:     1.07900 (-50 pips, 1.0×ATR)
@@ -203,6 +316,35 @@ OB id: 42 | BOS id: 17
 
 Time: 2026-09-03 14:30 UTC
 Signal ID: abc123...
+```
+
+### 1b. Trade signal (Pine + Python diverge)
+```
+🟡 SMC SIGNAL — LONG EURUSD
+⚠️ Pine vs Python diverge — verify on chart
+
+Pine:    side=long entry=1.0850 score=4.5
+Python:  side=long entry=1.0852 score=N/A
+Diff:    entry +2 pips (tolerance 5)
+
+→ Pine signal most recent but verify manually
+Entry:  1.08500
+SL:     1.07900
+TP1:    1.09700 (2R)
+TP2:    1.10900 (4R)
+
+Time: 2026-09-03 14:30 UTC
+Signal ID: abc123...
+```
+
+### 1c. Trade signal (validation timeout/error)
+```
+🟢 SMC SIGNAL — LONG EURUSD
+⚠️ validation skipped (timeout/error)
+
+Entry:  1.08500
+SL:     1.07900
+...
 ```
 
 ### 2. (optional) Order placed confirmation
@@ -242,8 +384,13 @@ Account: $100,825
 | `tradingview/smc-engine-indicator.pine` | 1 | Modify — add `alert()` with JSON payload |
 | `packages/smc_bot_webhook/src/smc_bot_webhook/payload.py` | 1 | Verify parser accepts new fields |
 | `tests/test_pine_payload.py` | 1 | Create — validate Pine payload format |
+| `packages/smc_bot_webhook/src/smc_bot_webhook/smc_validator.py` | 1.5 | **NEW** — Python SMC engine validation layer |
+| `packages/smc_bot_webhook/src/smc_bot_webhook/server.py` | 1.5 | Wire validator into webhook handler |
+| `packages/smc_bot_webhook/src/smc_bot_webhook/notify/formatting.py` | 1.5 | Add ✅ validated / ⚠️ diverge tags |
+| `tests/test_smc_validator.py` | 1.5 | **NEW** — unit tests for validator (matched/mismatch/timeout) |
 | `docs/pine-telegram-setup.md` | 1,2,3 | Create — step-by-step guide for user |
 | `.env.example` | 3 | Update — add TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID docs |
+| `config.yaml` | 1.5 | Add `pine_integration.validate_pine_signal` block |
 
 ## Dependencies
 
@@ -258,11 +405,12 @@ Account: $100,825
 | Phase | Effort | Type |
 |---|---|---|
 | 1 | 2-3h | Code |
+| 1.5 (validation) | 4-5h | Code |
 | 2 | 1-2h | Manual test |
 | 3 | 30min | Manual setup |
 | 4 (optional) | 1h | Manual setup |
 | 5 | Continuous | Manual trade |
-| **Total** | **~4-5h** | |
+| **Total** | **~8-11h** | |
 
 ## Success criteria
 
