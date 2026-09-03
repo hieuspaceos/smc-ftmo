@@ -14,12 +14,15 @@ displayMode  = input.string("Recent", "Display mode", options=["Recent", "All"],
 
 swingWindow        = input.int(5, "Swing left/right", minval=1, group=groupCore)
 atrPeriod          = input.int(14, "ATR period", minval=1, group=groupCore)
-displacementMult   = input.float(1.0, "Displacement ATR", minval=0.1, step=0.05, group=groupCore, tooltip="L6 backtest config: 1.0 (was 1.5)")
+displacementMult   = input.float(1.0, "Displacement ATR [L6]", minval=0.1, step=0.05, group=groupCore, tooltip="L6 backtest config: 1.0 (baseline 8W default is 1.5). Loosened so more displacement bars qualify.")
 structureBufferAtr = input.float(0.0, "Structure close buffer ATR", minval=0.0, step=0.05, group=groupCore)
 sweepBufferAtr     = input.float(0.05, "Sweep wick buffer ATR", minval=0.0, step=0.01, group=groupCore)
 obLookback         = input.int(20, "OB lookback", minval=1, group=groupCore)
 obExpiryBars       = input.int(200, "OB expiry bars", minval=1, group=groupCore)
 obCapPerSide       = input.int(64, "OB cap per side", minval=1, maxval=256, group=groupCore)
+obZoneMode         = input.string("Body 50%", "OB zone mode",
+     options=["Full Candle", "Body 50%", "Body 33%"], group=groupCore,
+     tooltip="How to derive OB top/bottom from the origin candle.\n  Full Candle: top=high, bottom=low (widest, lots of fill noise).\n  Body 50%:   top/bottom = body extremes (ICT/SMC standard).\n  Body 33%:   body extremes tightened to inner third (institutional).")
 fvgExpiryBars      = input.int(200, "FVG expiry bars", minval=1, group=groupCore)
 fvgCapPerSide      = input.int(64, "FVG cap per side", minval=1, maxval=256, group=groupCore)
 poolToleranceAtr   = input.float(0.15, "Pool tolerance ATR", minval=0.01, step=0.01, group=groupCore)
@@ -37,21 +40,24 @@ recentLabelBudget  = input.int(120, "Recent label budget", minval=10, maxval=500
 recentBoxBudget    = input.int(40, "Recent box budget", minval=10, maxval=200, group=groupDisplay)
 
 displayPreset            = input.string("Decision", "Display preset", options=["Decision", "Context", "Debug", "Custom"], group=groupRulebook)
-htfDailyEnabled          = input.bool(false, "Use Daily HTF (L6: off)", group=groupRulebook, tooltip="L6 backtest config: disabled")
-htfH4Enabled             = input.bool(false, "Use H4 HTF (L6: off)", group=groupRulebook, tooltip="L6 backtest config: disabled")
+htfDailyEnabled          = input.bool(false, "Use Daily HTF [L6: off]", group=groupRulebook, tooltip="L6 backtest config: disabled (baseline 8W default is true). L6 only uses LTF M15 structure.")
+htfH4Enabled             = input.bool(false, "Use H4 HTF [L6: off]", group=groupRulebook, tooltip="L6 backtest config: disabled (baseline 8W default is true). L6 only uses LTF M15 structure.")
 rulebookCleanSweepAtr    = input.float(0.05, "Rulebook clean sweep ATR", minval=0.05, step=0.05, group=groupRulebook)
-rulebookScoreThreshold   = input.float(2.0, "Rulebook score threshold (L6: 2.0)", minval=0.0, step=0.5, group=groupRulebook, tooltip="L6 backtest config: 2.0 (was 4.0)")
-rulebookEntryProximityAtr= input.float(8.0, "Entry proximity ATR (L6: 8.0)", minval=0.1, step=0.1, group=groupRulebook, tooltip="L6 backtest config: 8.0 (was 1.5)")
-rulebookSlEdgeAtr        = input.float(0.6, "SL edge buffer ATR (L6: 0.6)", minval=0.0, step=0.05, group=groupRulebook, tooltip="L6 backtest config: 0.6 (was 0.2)")
-rulebookSlMinAtr         = input.float(2.5, "Min SL distance ATR (skip too-tight OBs)", minval=0.0, step=0.1, group=groupRulebook)
-rulebookSlMaxAtr         = input.float(12.0, "Max SL distance ATR (L6: 12.0)", minval=0.1, step=0.1, group=groupRulebook, tooltip="L6 backtest config: 12.0 (was 4.0)")
-rulebookMinRR            = input.float(2.0, "Scale-in 2R trigger (L6: 2.0)", minval=0.5, step=0.5, group=groupRulebook, tooltip="L6 Design A: 2.0 (was 2.5)")
-rulebookMinSlPips        = input.float(17.0, "Min SL pips floor (L6 EURUSD: 17)", minval=0.0, step=1.0, group=groupRulebook, tooltip="L6 EURUSD floor: 17 pips = 170 ticks. Set 0 to disable.")
+rulebookScoreThreshold   = input.float(2.0, "Rulebook score threshold [L6: 2.0]", minval=0.0, step=0.5, group=groupRulebook, tooltip="L6 backtest config: 2.0 (baseline 8W default is 4.0). Loosened to pass more setups through confluence gate.")
+rulebookEntryProximityAtr= input.float(8.0, "Entry proximity ATR [L6: 8.0]", minval=0.1, step=0.1, group=groupRulebook, tooltip="L6 backtest config: 8.0 (baseline 8W default is 1.5). Loosened to allow entries up to 8x ATR away from OB edge.")
+rulebookSlEdgeAtr        = input.float(0.6, "SL edge buffer ATR [L6: 0.6]", minval=0.0, step=0.05, group=groupRulebook, tooltip="L6 backtest config: 0.6 (baseline 8W default is 0.2). Wider SL buffer beyond OB edge.")
+rulebookSlMinAtr         = input.float(0.3, "Min SL distance ATR (skip too-tight OBs)", minval=0.0, step=0.1, group=groupRulebook)
+rulebookSlMaxAtr         = input.float(12.0, "Max SL distance ATR [L6: 12.0]", minval=0.1, step=0.1, group=groupRulebook, tooltip="L6 backtest config: 12.0 (baseline 8W default is 4.0). Allows larger SL envelopes for volatile pairs.")
+rulebookMinRR            = input.float(2.0, "Scale-in trigger [R, L6: 2.0]", minval=0.5, step=0.5, group=groupRulebook, tooltip="L6 Design A scale-in trigger: 2.0R (baseline 8W default is 2.5). Matches ScaleInExit scale_in_r=2.0.")
+rulebookMinSlPips        = input.float(17.0, "Min SL pips floor [L6 EURUSD: 17]", minval=0.0, step=1.0, group=groupRulebook, tooltip="L6 EURUSD live floor: 17 pips = 170 ticks (5-digit broker). Set 0 to disable. For XAUUSD use ~17 (= 17.00 USD/oz). For BTCUSD use ~17 (= $17).")
 
 useScaleInMode           = input.bool(true, "Use scale-in exit mode (Design A)", group=groupRulebook)
 scaleInLeg2Tp1R          = input.float(2.0, "Scale-in leg2 TP1 (R, <=2.0=off, Design A)", minval=0.0, maxval=3.5, step=0.5,
 group=groupRulebook)
 showScaleInLines         = input.bool(true, "Show scale-in TP lines on chart", group=groupRulebook)
+// Auto-trade mode: ON bypasses all manual gates (bot/webhook use case).
+// OFF = manual trader must acknowledge each gate before trade labels fire.
+autoTradeMode            = input.bool(true, "Auto-trade mode (skip manual gates)", group=groupRulebook)
 
 
 manualRiskOk      = input.bool(false, "Risk 0.55% acknowledged", group=groupRulebook)
@@ -78,8 +84,8 @@ presetContext   = displayPreset == "Context"
 presetDebug     = displayPreset == "Debug"
 presetCustom    = displayPreset == "Custom"
 
-manualGatesAllOk    = manualRiskOk and manualTradesLeft > 0 and manualDailyROk and manualPosOk and manualSpreadOk and manualJudgmentOk
-manualGatesUnknown  = not (manualRiskOk or manualDailyROk or manualPosOk or manualSpreadOk or manualJudgmentOk)
+manualGatesAllOk    = autoTradeMode or (manualRiskOk and manualTradesLeft > 0 and manualDailyROk and manualPosOk and manualSpreadOk and manualJudgmentOk)
+manualGatesUnknown  = not autoTradeMode and not (manualRiskOk or manualDailyROk or manualPosOk or manualSpreadOk or manualJudgmentOk)
 
 effectiveShowPools        = auditMode and showPools
 effectiveShowDisplacement = auditMode and showDisplacement
@@ -227,14 +233,20 @@ rangeAtr           = atr > 0 ? candleRange / atr : na
 bodyAtr            = atr > 0 ? bodyRange / atr : na
 bodyRatio          = candleRange > 0 ? bodyRange / candleRange : na
 closeLocation      = candleRange > 0 ? (close - low) / candleRange : na
-// pipSize for 5-digit forex = 10 ticks (1 pip = 0.0001).
+// Adaptive threshold: M15 and lower need higher mult (more noise), H1+ keeps lower mult
+// float adaptiveDisplacementMult = timeframe.in_seconds() <= 900 ? displacementMult : timeframe.in_seconds() <= 3600 ? displacementMult - 0.5 : displacementMult - 0.75
+// pipSize for SL pips floor filter. 5-digit forex: 10 ticks = 1 pip = 0.0001.
+// For XAUUSD/BTCUSD 2-decimal: 10 ticks = 0.10 (user must override rulebookMinSlPips).
 float pipSize = syminfo.mintick * 10.0
+float adaptiveDisplacementMult = displacementMult
 expansionQualified = not na(atr) and candleRange > adaptiveDisplacementMult * atr
-expansionDirection = close > open ? 1 : close < open ? -1 : 0
+
 
 //==============================================================================
 // Persistent state
 //==============================================================================
+var bool expansionQualifiedPrev = false
+
 var swingHighs  = array.new<SwingLevel>()
 var swingLows   = array.new<SwingLevel>()
 var sweepHighs  = array.new<SwingLevel>()
@@ -286,6 +298,12 @@ var int   htfH4LastLowIdx   = -1
 
 var float scaleInTrigger    = na
 var float finalTp           = na
+
+// Scale-in mode: 2R trigger (leg1 partial close + leg2 entry) and 4R final TP.
+// When useScaleInMode is off, both stay na and no markers are drawn.
+var float rulebookScaleInTrigger = na
+var float rulebookFinalTp        = na
+var float rulebookLeg2Tp1        = na
 
 var int   lastBullBosId        = -1
 var int   lastBullChoChId      = -1
@@ -383,6 +401,36 @@ f_find_ob_origin(int direction, int breakBar, int lookbackBars) =>
                     origin := breakBar - j
                     break
     origin
+// Resolve OB top/bottom from the origin candle according to obZoneMode.
+// Mirrors smc_engine Python helper shape: pure function, no side effects.
+// direction: 1 = bullish OB (last bearish candle before bull BOS)
+//            -1 = bearish OB (last bullish candle before bear BOS)
+f_ob_zone_bounds(int direction, int originOffset) =>
+    float zoneTop    = 0.0
+    float zoneBottom = 0.0
+    if obZoneMode == "Full Candle"
+        zoneTop    := high[originOffset]
+        zoneBottom := low[originOffset]
+    else
+        float bodyTop    = math.max(open[originOffset], close[originOffset])
+        float bodyBottom = math.min(open[originOffset], close[originOffset])
+        float bodyHeight = bodyTop - bodyBottom
+        if obZoneMode == "Body 50%"
+            zoneTop    := bodyTop
+            zoneBottom := bodyBottom
+        else  // Body 33%
+            // For a bullish OB we tighten toward the upper end of the body
+            // (institutions bought from the discount side of the impulse).
+            // For a bearish OB we tighten toward the lower end.
+            float third = bodyHeight / 3.0
+            if direction == 1
+                zoneTop    := bodyTop
+                zoneBottom := bodyTop - third
+            else
+                zoneTop    := bodyBottom + third
+                zoneBottom := bodyBottom
+    [zoneTop, zoneBottom]
+
 f_make_structure_label(int eventDirection, string eventText) =>
     float y = eventDirection == 1 ? high : low
     style = eventDirection == 1 ? label.style_label_up : label.style_label_down
@@ -604,19 +652,17 @@ if barstate.isconfirmed
                         box.set_border_color(zone.zoneBox, f_zone_border(zone.direction, true))
                 array.set(bearishObs, i, zone)
 
-// Hoist expansionNearBreak to module scope - Pine v6 cannot reference
-// expansionQualified (a non-var global) at history offset [1] from inside
-// a conditional `if` block.
-bool expansionNearBreak = expansionQualified or (expansionQualified[1] == true)
-
+//==============================================================================
+// BOS-driven order block activation
+//==============================================================================
 if barstate.isconfirmed and bosSignal != 0
     int direction = bosSignal
+    bool expansionNearBreak = expansionQualified or expansionQualifiedPrev
     if expansionNearBreak
         int originBar = f_find_ob_origin(direction, bar_index, obLookback)
         if originBar >= 0
             int   originOffset = bar_index - originBar
-            float zoneTop      = high[originOffset]
-            float zoneBottom   = low[originOffset]
+            [zoneTop, zoneBottom] = f_ob_zone_bounds(direction, originOffset)
             if direction == 1
                 while f_count_live_obs(bullishObs) >= obCapPerSide
                     int expiredId = f_expire_oldest_live_ob(bullishObs, bar_index)
@@ -637,8 +683,8 @@ if barstate.isconfirmed and bosSignal != 0
                     f_track_box(boxQueue, drawBox, boxBudget)
                 OrderBlockZone newZone = OrderBlockZone.new(nextObId, direction, originBar, bar_index, zoneTop, zoneBottom, bar_index, false, false, na, na, na, drawBox, lastBearBosId)
                 array.push(bearishObs, newZone)
-            lastObText := (direction == 1 ? "bullish" : "bearish") + " OB @ " + str.tostring(zoneBottom, format.mintick) + " - " + str.tostring(zoneTop, format.mintick)
-            log.info("SMC ob_activated @ " + str.tostring(bar_index) + " id=" + str.tostring(nextObId) + " dir=" + (direction == 1 ? "bull" : "bear") + " zone=[" + str.tostring(zoneBottom, format.mintick) + "," + str.tostring(zoneTop, format.mintick) + "]")
+            lastObText := (direction == 1 ? "bullish" : "bearish") + " OB (" + obZoneMode + ") @ " + str.tostring(zoneBottom, format.mintick) + " - " + str.tostring(zoneTop, format.mintick)
+            log.info("SMC ob_activated @ " + str.tostring(bar_index) + " id=" + str.tostring(nextObId) + " dir=" + (direction == 1 ? "bull" : "bear") + " mode=" + obZoneMode + " zone=[" + str.tostring(zoneBottom, format.mintick) + "," + str.tostring(zoneTop, format.mintick) + "]")
         lastDiagnostic := "skip_ob_no_expansion@" + str.tostring(bar_index)
 
 //==============================================================================
@@ -758,7 +804,7 @@ if barstate.isconfirmed
 //==============================================================================
 // HTF confirmed-bar requests
 //==============================================================================
-[dTrendRaw, dH] = request.security(syminfo.tickerid, "240",
+[dTrendRaw, dH] = request.security(syminfo.tickerid, "D",
     [structureTrend[1] == 1 ? 1 : structureTrend[1] == -1 ? -1 : 0, ta.pivothigh(high, 5, 5)[1]],
     lookahead=barmerge.lookahead_on)
 [dL, h4TrendRaw] = request.security(syminfo.tickerid, "240",
@@ -819,10 +865,10 @@ if barstate.isconfirmed and bar_index >= swingWindow * 2
     float leftLowMin      = na
     float rightLowMin     = na
     for j = 1 to swingWindow
-        leftHighMax  := na(leftHighMax)  ? high[candidateOffset + j] : math.max(leftHighMax,  high[candidateOffset + j])
-        rightHighMax := na(rightHighMax) ? high[candidateOffset - j] : math.max(rightHighMax, high[candidateOffset - j])
-        leftLowMin   := na(leftLowMin)   ? low[candidateOffset + j]  : math.min(leftLowMin,   low[candidateOffset + j])
-        rightLowMin  := na(rightLowMin)  ? low[candidateOffset - j]  : math.min(rightLowMin,  low[candidateOffset - j])
+        leftHighMax  := na(leftHighMax)  ? high[candidateOffset - j] : math.max(leftHighMax,  high[candidateOffset - j])
+        rightHighMax := na(rightHighMax) ? high[candidateOffset + j] : math.max(rightHighMax, high[candidateOffset + j])
+        leftLowMin   := na(leftLowMin)   ? low[candidateOffset - j]  : math.min(leftLowMin,   low[candidateOffset - j])
+        rightLowMin  := na(rightLowMin)  ? low[candidateOffset + j]  : math.min(rightLowMin,  low[candidateOffset + j])
     bool isSwingHigh = candidateHigh > leftHighMax and candidateHigh >= rightHighMax
     bool isSwingLow  = candidateLow  < leftLowMin  and candidateLow  <= rightLowMin
 
@@ -974,6 +1020,8 @@ if barstate.isconfirmed and not na(atr) and atr > 0
             float slDist  = math.abs(entryPrice - slPrice)
             if slDist > rulebookSlMaxAtr * atr
                 continue
+            if slDist < rulebookSlMinAtr * atr
+                continue
             if rulebookMinSlPips > 0 and slDist < rulebookMinSlPips * pipSize
                 continue
             float targetPrice = entryPrice + rulebookMinRR * slDist
@@ -1038,7 +1086,7 @@ if barstate.isconfirmed and not na(atr) and atr > 0
                 continue
             float slPrice = obTop + atr * rulebookSlEdgeAtr
             float slDist  = math.abs(entryPrice - slPrice)
-            if slDist > rulebookSlMaxAtr * atr
+            if slDist < rulebookSlMinAtr * atr
                 continue
             if rulebookMinSlPips > 0 and slDist < rulebookMinSlPips * pipSize
                 continue
@@ -1088,6 +1136,8 @@ if barstate.isconfirmed and not na(atr) and atr > 0
         if useScaleInMode
             scaleInTrigger := bestObDir == 1 ? entry + 2.0 * slDistance : entry - 2.0 * slDistance
             finalTp        := bestObDir == 1 ? entry + 4.0 * slDistance : entry - 4.0 * slDistance
+        // Optional Design B leg2 TP1 at scaleInLeg2Tp1R (e.g. 3.0 = 3R).
+        float leg2Tp1 = useScaleInMode and scaleInLeg2Tp1R > 2.0 ? (bestObDir == 1 ? entry + scaleInLeg2Tp1R * slDistance : entry - scaleInLeg2Tp1R * slDistance) : na
     
         // Trade label - shows entry, SL, 2R, 4R levels on chart
         // Only fires on NEW chart-qualified setup (bestObId changed)
@@ -1096,7 +1146,8 @@ if barstate.isconfirmed and not na(atr) and atr > 0
             color  sideColor = bestObDir == 1 ? color.new(color.lime, 30) : color.new(color.red, 30)
             string labelText = sideText + " @ " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(slEdge, format.mintick) + "\n+2R " + str.tostring(scaleInTrigger, format.mintick) + "\n+4R " + str.tostring(finalTp, format.mintick)
             float labelY = bestObDir == 1 ? high : low
-            label.new(bar_index, labelY, labelText, xloc=xloc.bar_index, style=label.style_label_down, textcolor=color.white, color=sideColor, size=size.small)    
+            string labelStyle = bestObDir == 1 ? label.style_label_down : label.style_label_up
+            label.new(bar_index, labelY, labelText, xloc=xloc.bar_index, style=labelStyle, textcolor=color.white, color=sideColor, size=size.small)    
 
         if manualGatesAllOk
             rulebookState := "chart-qualified"
@@ -1115,6 +1166,9 @@ if barstate.isconfirmed and not na(atr) and atr > 0
         rulebookEntry        := entry
         rulebookStop         := slEdge
         rulebookTarget       := target
+        rulebookScaleInTrigger := scaleInTrigger
+        rulebookFinalTp        := finalTp
+        rulebookLeg2Tp1        := leg2Tp1
         if low <= bestObTop and high >= bestObBottom
             rulebookTouchBar := bar_index
     else
@@ -1126,6 +1180,9 @@ if barstate.isconfirmed and not na(atr) and atr > 0
         rulebookEntry        := float(na)
         rulebookStop         := float(na)
         rulebookTarget       := float(na)
+        rulebookScaleInTrigger := float(na)
+        rulebookFinalTp        := float(na)
+        rulebookLeg2Tp1        := float(na)
         rulebookScore        := 0.0
         rulebookRejection    := "no-qualifying-ob"
 
@@ -1198,3 +1255,6 @@ alertcondition((lastPoolText != "none") and (lastPoolText != (lastPoolText[1] ==
 alertcondition(rulebookState == "chart-qualified" and rulebookState[1] != "chart-qualified", "SMC chart-qualified", "SMC candidate became chart-qualified")
 alertcondition(rulebookState == "watch" and rulebookState[1] != "watch", "SMC watch", "SMC candidate became watch")
 alertcondition(rulebookState == "blocked" and rulebookState[1] != "blocked", "SMC blocked", "SMC candidate became blocked")
+// Persist expansionQualified for the next bar's "near break" check (Pine v6 cannot index
+// non-var globals at offset [1] from inside a conditional `if` block).
+expansionQualifiedPrev := expansionQualified

@@ -14,7 +14,7 @@ displayMode  = input.string("Recent", "Display mode", options=["Recent", "All"],
 
 swingWindow        = input.int(5, "Swing left/right", minval=1, group=groupCore)
 atrPeriod          = input.int(14, "ATR period", minval=1, group=groupCore)
-displacementMult   = input.float(1.5, "Displacement ATR", minval=0.1, step=0.05, group=groupCore)
+displacementMult   = input.float(1.0, "Displacement ATR [L6]", minval=0.1, step=0.05, group=groupCore, tooltip="L6 backtest config: 1.0 (baseline 8W default is 1.5). Loosened so more displacement bars qualify → more trades.")
 structureBufferAtr = input.float(0.0, "Structure close buffer ATR", minval=0.0, step=0.05, group=groupCore)
 sweepBufferAtr     = input.float(0.05, "Sweep wick buffer ATR", minval=0.0, step=0.01, group=groupCore)
 obLookback         = input.int(20, "OB lookback", minval=1, group=groupCore)
@@ -37,15 +37,16 @@ recentLabelBudget  = input.int(120, "Recent label budget", minval=10, maxval=500
 recentBoxBudget    = input.int(40, "Recent box budget", minval=10, maxval=200, group=groupDisplay)
 
 displayPreset            = input.string("Decision", "Display preset", options=["Decision", "Context", "Debug", "Custom"], group=groupRulebook)
-htfDailyEnabled          = input.bool(true, "Use Daily HTF", group=groupRulebook)
-htfH4Enabled             = input.bool(true, "Use H4 HTF", group=groupRulebook)
+htfDailyEnabled          = input.bool(false, "Use Daily HTF [L6: off]", group=groupRulebook, tooltip="L6 backtest config: disabled (baseline 8W default is true). L6 only uses LTF M15 structure.")
+htfH4Enabled             = input.bool(false, "Use H4 HTF [L6: off]", group=groupRulebook, tooltip="L6 backtest config: disabled (baseline 8W default is true). L6 only uses LTF M15 structure.")
 rulebookCleanSweepAtr    = input.float(0.05, "Rulebook clean sweep ATR", minval=0.05, step=0.05, group=groupRulebook)
-rulebookScoreThreshold   = input.float(4.0, "Rulebook score threshold", minval=0.0, step=0.5, group=groupRulebook)
-rulebookEntryProximityAtr= input.float(1.5, "Entry proximity ATR", minval=0.1, step=0.1, group=groupRulebook)
-rulebookSlEdgeAtr        = input.float(0.2, "SL edge buffer ATR", minval=0.0, step=0.05, group=groupRulebook)
+rulebookScoreThreshold   = input.float(2.0, "Rulebook score threshold [L6: 2.0]", minval=0.0, step=0.5, group=groupRulebook, tooltip="L6 backtest config: 2.0 (baseline 8W default is 4.0). Loosened to pass more setups through confluence gate.")
+rulebookEntryProximityAtr= input.float(8.0, "Entry proximity ATR [L6: 8.0]", minval=0.1, step=0.1, group=groupRulebook, tooltip="L6 backtest config: 8.0 (baseline 8W default is 1.5). Loosened to allow entries up to 8x ATR away from OB edge.")
+rulebookSlEdgeAtr        = input.float(0.6, "SL edge buffer ATR [L6: 0.6]", minval=0.0, step=0.05, group=groupRulebook, tooltip="L6 backtest config: 0.6 (baseline 8W default is 0.2). Wider SL buffer beyond OB edge.")
 rulebookSlMinAtr         = input.float(0.3, "Min SL distance ATR (skip too-tight OBs)", minval=0.0, step=0.1, group=groupRulebook)
-rulebookSlMaxAtr         = input.float(4.0, "Max SL distance ATR", minval=0.1, step=0.1, group=groupRulebook)
-rulebookMinRR            = input.float(2.5, "Minimum 2R target", minval=0.5, step=0.5, group=groupRulebook)
+rulebookSlMaxAtr         = input.float(12.0, "Max SL distance ATR [L6: 12.0]", minval=0.1, step=0.1, group=groupRulebook, tooltip="L6 backtest config: 12.0 (baseline 8W default is 4.0). Allows larger SL envelopes for volatile pairs.")
+rulebookMinRR            = input.float(2.0, "Scale-in trigger [R, L6: 2.0]", minval=0.5, step=0.5, group=groupRulebook, tooltip="L6 Design A scale-in trigger: 2.0R (baseline 8W default is 2.5). Matches ScaleInExit scale_in_r=2.0.")
+rulebookMinSlPips        = input.float(17.0, "Min SL pips floor [L6 EURUSD: 17]", minval=0.0, step=1.0, group=groupRulebook, tooltip="L6 EURUSD live floor: 17 pips = 170 ticks (5-digit broker). Set 0 to disable. For XAUUSD use ~17 (= 17.00 USD/oz, 170 ticks of 0.10). For BTCUSD use ~17 (= $17, 170 ticks of $0.10).")
 
 useScaleInMode           = input.bool(true, "Use scale-in exit mode (Design A)", group=groupRulebook)
 scaleInLeg2Tp1R          = input.float(2.0, "Scale-in leg2 TP1 (R, <=2.0=off, Design A)", minval=0.0, maxval=3.5, step=0.5,
@@ -54,8 +55,6 @@ showScaleInLines         = input.bool(true, "Show scale-in TP lines on chart", g
 // Auto-trade mode: ON bypasses all manual gates (bot/webhook use case).
 // OFF = manual trader must acknowledge each gate before trade labels fire.
 autoTradeMode            = input.bool(true, "Auto-trade mode (skip manual gates)", group=groupRulebook)
-// Debug mode: ON bypasses ALL pipeline gates (HTF, score, SL, wall) to test OB activation.
-debugBypassAllGates      = input.bool(false, "DEBUG: bypass all gates (any OB fires)", group=groupRulebook)
 
 
 manualRiskOk      = input.bool(false, "Risk 0.55% acknowledged", group=groupRulebook)
@@ -233,9 +232,14 @@ bodyRatio          = candleRange > 0 ? bodyRange / candleRange : na
 closeLocation      = candleRange > 0 ? (close - low) / candleRange : na
 // Adaptive threshold: M15 and lower need higher mult (more noise), H1+ keeps lower mult
 // float adaptiveDisplacementMult = timeframe.in_seconds() <= 900 ? displacementMult : timeframe.in_seconds() <= 3600 ? displacementMult - 0.5 : displacementMult - 0.75
+// pipSize for the SL pips floor filter.
+// 5-digit forex (EURUSD, GBPUSD): mintick = 0.00001 → 10 ticks = 1 pip = 0.0001.
+// 3-digit JPY pairs (USDJPY): mintick = 0.001 → 10 ticks = 1 pip = 0.01.
+// XAUUSD 2-decimal: mintick = 0.01 → 10 ticks = 0.10 (not 1 pip = 0.01; user must override).
+// BTCUSD 2-decimal: mintick = 0.01 → 10 ticks = 0.10 (not $1; user must override).
+// Conservative default: 10 ticks. Users for XAUUSD/BTCUSD should set rulebookMinSlPips to match pip convention.
+float pipSize = syminfo.mintick * 10.0
 float adaptiveDisplacementMult = displacementMult
-expansionQualified = not na(atr) and candleRange > adaptiveDisplacementMult * atr
-expansionDirection = close > open ? 1 : close < open ? -1 : 0
 
 //==============================================================================
 // Persistent state
@@ -615,12 +619,13 @@ if barstate.isconfirmed
                         box.set_border_color(zone.zoneBox, f_zone_border(zone.direction, true))
                 array.set(bearishObs, i, zone)
 
-//==============================================================================
-// BOS-driven order block activation
-//==============================================================================
+// Hoist expansionNearBreak to module scope - Pine v6 cannot reference
+// expansionQualified (a non-var global) at history offset [1] from inside
+// a conditional `if` block.
+bool expansionNearBreak = expansionQualified or (expansionQualified[1] == true)
+
 if barstate.isconfirmed and bosSignal != 0
     int direction = bosSignal
-    bool expansionNearBreak = expansionQualified or (expansionQualified[1] == true)
     if expansionNearBreak
         int originBar = f_find_ob_origin(direction, bar_index, obLookback)
         if originBar >= 0
@@ -962,39 +967,39 @@ if barstate.isconfirmed and not na(atr) and atr > 0
                 continue
             if zone.linkedBosId < 0
                 continue
-            if not debugBypassAllGates
-                if htfDailyEnabled and (htfDTrend == 0 or htfDTrend != dirSign)
-                    continue
-                if htfH4Enabled and (htfH4Trend == 0 or htfH4Trend != dirSign)
-                    continue
-                if dirSign != structureTrend
-                    continue
-                if zone.touched
-                    continue
-                if lastBullChoChId > zone.linkedBosId
-                    continue
-                if not sessionAllowed
-                    continue
-                float proximity  = math.abs(close - obTop)
-                if proximity > rulebookEntryProximityAtr * atr
-                    continue
-                float slDist  = math.abs(obTop - (obBottom - atr * rulebookSlEdgeAtr))
-                if slDist > rulebookSlMaxAtr * atr
-                    continue
-                if slDist < rulebookSlMinAtr * atr
-                    continue    
-                float targetPrice = obTop + rulebookMinRR * slDist
-                bool wallHit = false
-                if not na(htfH4RangeHigh) and targetPrice >= htfH4RangeHigh
-                    wallHit := true
-                if wallHit
-                    continue
+            if htfDailyEnabled and (htfDTrend == 0 or htfDTrend != dirSign)
+                continue
+            if htfH4Enabled and (htfH4Trend == 0 or htfH4Trend != dirSign)
+                continue
+            if dirSign != structureTrend
+                continue
+            if zone.touched
+                continue
+            if lastBullChoChId > zone.linkedBosId
+                continue
+            if not sessionAllowed
+                continue
             float obTop      = zone.top
             float obBottom   = zone.bottom
-            float entryPrice = debugBypassAllGates ? (zone.direction == 1 ? obTop : obBottom) : (zone.direction == 1 ? obTop : obBottom)
+            float entryPrice = obTop
             float proximity  = math.abs(close - entryPrice)
-            float slDist     = math.abs(entryPrice - (entryPrice > close ? obTop + atr * rulebookSlEdgeAtr : obBottom - atr * rulebookSlEdgeAtr))
-            float score      = 0.0
+            if proximity > rulebookEntryProximityAtr * atr
+                continue
+            float slPrice = obBottom - atr * rulebookSlEdgeAtr
+            float slDist  = math.abs(entryPrice - slPrice)
+            if slDist > rulebookSlMaxAtr * atr
+                continue
+            if slDist < rulebookSlMinAtr * atr
+                continue
+            if rulebookMinSlPips > 0 and slDist < rulebookMinSlPips * pipSize
+                continue
+            float targetPrice = entryPrice + rulebookMinRR * slDist
+            bool wallHit = false
+            if not na(htfH4RangeHigh) and targetPrice >= htfH4RangeHigh
+                wallHit := true
+            if wallHit
+                continue
+            float score = 0.0
             if expansionQualified
                 score += 1.0
             if dirSign == structureTrend
@@ -1006,7 +1011,7 @@ if barstate.isconfirmed and not na(atr) and atr > 0
                 score += 1.0
             if pdZone == "discount"
                 score += 1.0
-            if not debugBypassAllGates and score < rulebookScoreThreshold
+            if score < rulebookScoreThreshold
                 continue
             int activationPos = zone.activationIndex
             if activationPos > bestObActivation or (activationPos == bestObActivation and proximity < bestProximity) or (activationPos == bestObActivation and proximity == bestProximity and zone.id < bestObId)
@@ -1030,39 +1035,39 @@ if barstate.isconfirmed and not na(atr) and atr > 0
                 continue
             if zone.linkedBosId < 0
                 continue
-            if not debugBypassAllGates
-                if htfDailyEnabled and (htfDTrend == 0 or htfDTrend != dirSign)
-                    continue
-                if htfH4Enabled and (htfH4Trend == 0 or htfH4Trend != dirSign)
-                    continue
-                if dirSign != structureTrend
-                    continue
-                if zone.touched
-                    continue
-                if lastBearChoChId > zone.linkedBosId
-                    continue
-                if not sessionAllowed
-                    continue
-                float proximity  = math.abs(close - obBottom)
-                if proximity > rulebookEntryProximityAtr * atr
-                    continue
-                float slDist  = math.abs(obBottom - (obTop + atr * rulebookSlEdgeAtr))
-                if slDist > rulebookSlMaxAtr * atr
-                    continue
-                if slDist < rulebookSlMinAtr * atr
-                    continue    
-                float targetPrice = obBottom - rulebookMinRR * slDist
-                bool wallHit = false
-                if not na(htfH4RangeLow) and targetPrice <= htfH4RangeLow
-                    wallHit := true
-                if wallHit
-                    continue
+            if htfDailyEnabled and (htfDTrend == 0 or htfDTrend != dirSign)
+                continue
+            if htfH4Enabled and (htfH4Trend == 0 or htfH4Trend != dirSign)
+                continue
+            if dirSign != structureTrend
+                continue
+            if zone.touched
+                continue
+            if lastBearChoChId > zone.linkedBosId
+                continue
+            if not sessionAllowed
+                continue
             float obTop      = zone.top
             float obBottom   = zone.bottom
             float entryPrice = obBottom
             float proximity  = math.abs(close - entryPrice)
-            float slDist     = math.abs(entryPrice - (obTop + atr * rulebookSlEdgeAtr))
-            float score      = 0.0
+            if proximity > rulebookEntryProximityAtr * atr
+                continue
+            float slPrice = obTop + atr * rulebookSlEdgeAtr
+            float slDist  = math.abs(entryPrice - slPrice)
+            if slDist > rulebookSlMaxAtr * atr
+                continue
+            if slDist < rulebookSlMinAtr * atr
+                continue
+            if rulebookMinSlPips > 0 and slDist < rulebookMinSlPips * pipSize
+                continue
+            float targetPrice = entryPrice - rulebookMinRR * slDist
+            bool wallHit = false
+            if not na(htfH4RangeLow) and targetPrice <= htfH4RangeLow
+                wallHit := true
+            if wallHit
+                continue
+            float score = 0.0
             if expansionQualified
                 score += 1.0
             if dirSign == structureTrend
@@ -1074,7 +1079,7 @@ if barstate.isconfirmed and not na(atr) and atr > 0
                 score += 1.0
             if pdZone == "premium"
                 score += 1.0
-            if not debugBypassAllGates and score < rulebookScoreThreshold
+            if score < rulebookScoreThreshold
                 continue
             int activationPos = zone.activationIndex
             if activationPos > bestObActivation or (activationPos == bestObActivation and proximity < bestProximity) or (activationPos == bestObActivation and proximity == bestProximity and zone.id < bestObId)
@@ -1219,31 +1224,5 @@ alertcondition((bosSignal == 1 or bosSignal == -1) and not na(brokenLevel), "SMC
 alertcondition((lastSweepText != "none") and (lastSweepText != (lastSweepText[1] == "" ? "none" : lastSweepText[1])), "SMC sweep", "SMC liquidity sweep detected")
 alertcondition((lastPoolText != "none") and (lastPoolText != (lastPoolText[1] == "" ? "none" : lastPoolText[1])), "SMC pool event", "SMC pool activated or swept")
 alertcondition(rulebookState == "chart-qualified" and rulebookState[1] != "chart-qualified", "SMC chart-qualified", "SMC candidate became chart-qualified")
-
-// Phase 1 (Pine emit JSON webhook payload): fires an SMC|v1 pipe-delimited
-// payload on every chart-qualified setup so the bot can parse trade levels
-// (entry/SL/TP1/2/3/score) and pass them to Telegram. This is the ONLY
-// alert() that emits a structured payload; the alertcondition() lines
-// above remain for chart labeling only.
-if useScaleInMode and rulebookState == "chart-qualified" and rulebookState[1] != "chart-qualified"
-    chartQualifiedJSON = str.format(
-      "SMC|v1|event=chart_qualified|symbol={0}|tf={1}|dir={2}|level={3}|bar_time={4}|ob_id={5}|bos_id={6}|state={7}|reason={8}|entry={9}|sl={10}|tp1={11}|tp2={12}|tp3={13}|score={14}",
-      syminfo.ticker,
-      timeframe.period,
-      bestObDir == 1 ? "long" : "short",
-      str.tostring(entry, format.mintick),
-      bar_time,
-      str.tostring(bestObId),
-      str.tostring(bestBosId),
-      "chart-qualified",
-      bestReason,
-      str.tostring(entry, format.mintick),
-      str.tostring(slEdge, format.mintick),
-      str.tostring(scaleInTrigger, format.mintick),
-      str.tostring(scaleInTrigger + (finalTp - scaleInTrigger) * 0.5, format.mintick),
-      str.tostring(finalTp, format.mintick),
-      str.tostring(bestScore)
-    )
-    alert("SMC chart-qualified JSON", chartQualifiedJSON)
 alertcondition(rulebookState == "watch" and rulebookState[1] != "watch", "SMC watch", "SMC candidate became watch")
 alertcondition(rulebookState == "blocked" and rulebookState[1] != "blocked", "SMC blocked", "SMC candidate became blocked")
