@@ -171,6 +171,8 @@ def run_backtest(
     strat_cfg = config.get("strategy", {}) if isinstance(config.get("strategy"), dict) else {}
     rr_target = float(strat_cfg.get("rr_target", config.get("rr_target", 2.5)))
     sl_atr_buffer = float(strat_cfg.get("sl_atr_buffer", config.get("sl_atr_buffer", 0.2)))
+    min_sl_atr = float(strat_cfg.get("min_sl_atr", config.get("min_sl_atr", 0.0)))
+    max_sl_atr = float(strat_cfg.get("max_sl_atr", config.get("max_sl_atr", 99.0)))
     displacement_atr_mult = float(
         strat_cfg.get("displacement_atr_mult", config.get("displacement_atr_mult", 1.5))
     )
@@ -223,8 +225,12 @@ def run_backtest(
 
     # Exit mode: 'ladder' (default PartialTPExit) or 'scale_in' (ScaleInExit).
     # Backward-compatible: existing configs default to 'ladder' (unchanged behavior).
+    # Exit mode: 'ladder' (default PartialTPExit), 'scale_in' (leg2 @ 2R peak,
+    # 0.5 vol), 'scale_in_middle' (leg2 @ 1R retrace, 0.5 vol), or
+    # 'scale_in_middle_1r' (leg2 @ 1R retrace, 1.0 vol).
     exit_mode = strat_cfg.get("exit_mode", config.get("exit_mode", "ladder"))
-    if exit_mode not in ("ladder", "scale_in"):
+    if exit_mode not in ("ladder", "scale_in",
+                         "scale_in_middle", "scale_in_middle_1r"):
         exit_mode = "ladder"
 
 
@@ -554,6 +560,8 @@ def run_backtest(
             "reasons": reasons,
             "pair": pair,
             "sl_atr_buffer": sl_atr_buffer,
+            "min_sl_atr": min_sl_atr,
+            "max_sl_atr": max_sl_atr,
             "tp_stages": tp_stages,
         }
 
@@ -577,8 +585,8 @@ def run_backtest(
                     val = action[1]
                     orig_frac = float(val) * pos_rem
                     r_now = exit_obj.r_multiple
-                    if exit_mode != "scale_in":
-                        # Ladder mode: backtester tracks realized_r.
+                    if exit_mode == "ladder":
+                        # Ladder mode: backtester tracks realized_r mid-trade.
                         equity += orig_frac * r_now * risk_amount
                         # Commission (Phase 08 Step 2): each side pays per-lot fee.
                         # Closing a partial chunk incurs commission on that chunk.
@@ -587,6 +595,9 @@ def run_backtest(
                         pos_rem *= max(0.0, 1.0 - float(val))
                         open_pos["pos_remaining"] = pos_rem
                         open_pos["realized_r"] = open_pos.get("realized_r", 0.0) + orig_frac * r_now
+                    # scale_in / scale_in_middle: exit_obj tracks realized_r
+                    # internally; equity is updated only on full close via
+                    # the 'closed' branch below.
                     # scale_in mode: ScaleInExit tracks realized_r internally;
                     # equity is updated only on full close via the 'closed' branch below.
                 elif tag == "move_sl":
@@ -628,7 +639,7 @@ def run_backtest(
                 elif tag == "closed":
                     r_final = (
                         exit_obj.r_multiple
-                        if exit_mode == "scale_in"
+                    if exit_mode != "ladder"
                         else open_pos.get("realized_r", exit_obj.r_multiple)
                     )
                     pnl = r_final * risk_amount
@@ -661,10 +672,14 @@ def run_backtest(
                     guard.record_trade(r_final)
                     # Apply final PnL to equity. Ladder mode already credited
                     # partial closes in the 'close_pct' branch above, so we add
-                    # only the residual (r_final - open_pos.realized_r). Scale_in
-                    # mode credits nothing during the trade, so we add the full
-                    # r_final here. Either way: equity += r_final - prior_realized.
-                    prior_realized = open_pos.get("realized_r", 0.0) if exit_mode != "scale_in" else 0.0
+                    # only the residual (r_final - open_pos.realized_r). The two
+                    # scale_in* modes credit nothing during the trade, so we add
+                    # the full r_final here.
+                    prior_realized = (
+                        open_pos.get("realized_r", 0.0)
+                        if exit_mode == "ladder"
+                        else 0.0
+                    )
                     equity += (r_final - prior_realized) * risk_amount
                     # Commission on remaining position (Phase 08 Step 2).
                     # Partial closes already paid commission on closed chunks;
@@ -716,16 +731,27 @@ def run_backtest(
                             entry_info["entry"] = entry_info["entry"] - price_offset
                             entry_info["sl"] = entry_info["sl"] + slip_pips * pip_size_for_pair(pair)
                     if exit_mode == "scale_in":
-                        # Design B (optional): leg2 takes 50% profit at leg2_tp1_r.
-                        # Opt-in via config: exit_mode=='scale_in' AND
-                        # strategy.leg2_tp1_r is set. Same fallback pattern as
-                        # other strategy.* keys: strat_cfg first, then top-level.
+                        from scale_in_exit import ScaleInExit
                         leg2_tp1_r = strat_cfg.get("leg2_tp1_r", config.get("leg2_tp1_r"))
                         exit_obj = ScaleInExit(
                             entry=entry_info["entry"],
                             sl=entry_info["sl"],
                             side=entry_info["side"],
                             leg2_tp1_r=leg2_tp1_r,
+                        )
+                    elif exit_mode == "scale_in_middle":
+                        from scale_in_middle_exit import ScaleInMiddleExit
+                        exit_obj = ScaleInMiddleExit(
+                            entry=entry_info["entry"],
+                            sl=entry_info["sl"],
+                            side=entry_info["side"],
+                        )
+                    elif exit_mode == "scale_in_middle_1r":
+                        from scale_in_middle_1r_exit import ScaleInMiddle1RExit
+                        exit_obj = ScaleInMiddle1RExit(
+                            entry=entry_info["entry"],
+                            sl=entry_info["sl"],
+                            side=entry_info["side"],
                         )
                     else:
                         exit_obj = PartialTPExit(

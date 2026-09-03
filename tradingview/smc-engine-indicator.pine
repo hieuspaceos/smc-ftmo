@@ -39,21 +39,23 @@ recentBoxBudget    = input.int(40, "Recent box budget", minval=10, maxval=200, g
 displayPreset            = input.string("Decision", "Display preset", options=["Decision", "Context", "Debug", "Custom"], group=groupRulebook)
 htfDailyEnabled          = input.bool(true, "Use Daily HTF", group=groupRulebook)
 htfH4Enabled             = input.bool(true, "Use H4 HTF", group=groupRulebook)
-rulebookCleanSweepAtr    = input.float(0.25, "Rulebook clean sweep ATR", minval=0.05, step=0.05, group=groupRulebook)
+rulebookCleanSweepAtr    = input.float(0.05, "Rulebook clean sweep ATR", minval=0.05, step=0.05, group=groupRulebook)
 rulebookScoreThreshold   = input.float(4.0, "Rulebook score threshold", minval=0.0, step=0.5, group=groupRulebook)
 rulebookEntryProximityAtr= input.float(1.5, "Entry proximity ATR", minval=0.1, step=0.1, group=groupRulebook)
 rulebookSlEdgeAtr        = input.float(0.2, "SL edge buffer ATR", minval=0.0, step=0.05, group=groupRulebook)
-rulebookSlMaxAtr         = input.float(1.2, "Max SL distance ATR", minval=0.1, step=0.1, group=groupRulebook)
-rulebookMinRR            = input.float(2.0, "Minimum 2R target", minval=0.5, step=0.5, group=groupRulebook)
-// Scale-in mode (Design A): when ON, draws 2R trigger line (partial close +
-// leg2 entry) and 4R final TP line instead of the single 2R target. Backtest
-// validated: +23% PnL, -44% DD vs ladder. Off = legacy single-target view.
-// See journal/rule-book.md §1 and src/scale_in_exit.py for math invariants.
-useScaleInMode           = input.bool(false, "Use scale-in exit mode (Design A)", group=groupRulebook)
-// Optional Design B: leg2 takes 50% profit at this R from original entry
-// (typical 3.0). Drawn only when useScaleInMode is also on. Null = no TP1.
-scaleInLeg2Tp1R          = input.float(3.0, "Scale-in leg2 TP1 (R, Design B)", minval=2.5, maxval=3.5, step=0.5, group=groupRulebook)
+rulebookSlMinAtr         = input.float(0.3, "Min SL distance ATR (skip too-tight OBs)", minval=0.0, step=0.1, group=groupRulebook)
+rulebookSlMaxAtr         = input.float(4.0, "Max SL distance ATR", minval=0.1, step=0.1, group=groupRulebook)
+rulebookMinRR            = input.float(2.5, "Minimum 2R target", minval=0.5, step=0.5, group=groupRulebook)
+
+useScaleInMode           = input.bool(true, "Use scale-in exit mode (Design A)", group=groupRulebook)
+scaleInLeg2Tp1R          = input.float(2.0, "Scale-in leg2 TP1 (R, <=2.0=off, Design A)", minval=0.0, maxval=3.5, step=0.5,
+group=groupRulebook)
 showScaleInLines         = input.bool(true, "Show scale-in TP lines on chart", group=groupRulebook)
+// Auto-trade mode: ON bypasses all manual gates (bot/webhook use case).
+// OFF = manual trader must acknowledge each gate before trade labels fire.
+autoTradeMode            = input.bool(true, "Auto-trade mode (skip manual gates)", group=groupRulebook)
+// Debug mode: ON bypasses ALL pipeline gates (HTF, score, SL, wall) to test OB activation.
+debugBypassAllGates      = input.bool(false, "DEBUG: bypass all gates (any OB fires)", group=groupRulebook)
 
 
 manualRiskOk      = input.bool(false, "Risk 0.55% acknowledged", group=groupRulebook)
@@ -80,8 +82,8 @@ presetContext   = displayPreset == "Context"
 presetDebug     = displayPreset == "Debug"
 presetCustom    = displayPreset == "Custom"
 
-manualGatesAllOk    = manualRiskOk and manualTradesLeft > 0 and manualDailyROk and manualPosOk and manualSpreadOk and manualJudgmentOk
-manualGatesUnknown  = not (manualRiskOk or manualDailyROk or manualPosOk or manualSpreadOk or manualJudgmentOk)
+manualGatesAllOk    = autoTradeMode or (manualRiskOk and manualTradesLeft > 0 and manualDailyROk and manualPosOk and manualSpreadOk and manualJudgmentOk)
+manualGatesUnknown  = not autoTradeMode and not (manualRiskOk or manualDailyROk or manualPosOk or manualSpreadOk or manualJudgmentOk)
 
 effectiveShowPools        = auditMode and showPools
 effectiveShowDisplacement = auditMode and showDisplacement
@@ -229,11 +231,10 @@ rangeAtr           = atr > 0 ? candleRange / atr : na
 bodyAtr            = atr > 0 ? bodyRange / atr : na
 bodyRatio          = candleRange > 0 ? bodyRange / candleRange : na
 closeLocation      = candleRange > 0 ? (close - low) / candleRange : na
-// PARITY-LOCK: keep displacement threshold identical to Python smc_engine at all TFs.
-// The Python backtester + parity script use 1.5×ATR flat (no adaptive). Changing this
-// branch would break 100% parity with src/smc_signals.SMCSignals and the
-// export-pine-parity-fixtures reference. See docs/parity-strategy.md (if present).
+// Adaptive threshold: M15 and lower need higher mult (more noise), H1+ keeps lower mult
+// float adaptiveDisplacementMult = timeframe.in_seconds() <= 900 ? displacementMult : timeframe.in_seconds() <= 3600 ? displacementMult - 0.5 : displacementMult - 0.75
 float adaptiveDisplacementMult = displacementMult
+expansionQualified = not na(atr) and candleRange > adaptiveDisplacementMult * atr
 expansionDirection = close > open ? 1 : close < open ? -1 : 0
 
 //==============================================================================
@@ -288,6 +289,15 @@ var int   htfDLastLowIdx    = -1
 var int   htfH4LastHighIdx  = -1
 var int   htfH4LastLowIdx   = -1
 
+var float scaleInTrigger    = na
+var float finalTp           = na
+
+// Scale-in mode: 2R trigger (leg1 partial close + leg2 entry) and 4R final TP.
+// When useScaleInMode is off, both stay na and no markers are drawn.
+var float rulebookScaleInTrigger = na
+var float rulebookFinalTp        = na
+var float rulebookLeg2Tp1        = na
+
 var int   lastBullBosId        = -1
 var int   lastBullChoChId      = -1
 var int   lastBearBosId        = -1
@@ -303,11 +313,6 @@ var float rulebookScore        = 0.0
 var float rulebookEntry        = na
 var float rulebookStop         = na
 var float rulebookTarget       = na
-// Scale-in mode: 2R trigger (leg1 partial close + leg2 entry) and 4R final TP.
-// When useScaleInMode is off, both stay na and no markers are drawn.
-var float rulebookScaleInTrigger = na
-var float rulebookFinalTp        = na
-var float rulebookLeg2Tp1        = na
 var int   rulebookTouchBar     = -1
 
 var int   lastCleanSweepBar    = -1
@@ -763,7 +768,7 @@ if barstate.isconfirmed
 //==============================================================================
 // HTF confirmed-bar requests
 //==============================================================================
-[dTrendRaw, dH] = request.security(syminfo.tickerid, "240",
+[dTrendRaw, dH] = request.security(syminfo.tickerid, "D",
     [structureTrend[1] == 1 ? 1 : structureTrend[1] == -1 ? -1 : 0, ta.pivothigh(high, 5, 5)[1]],
     lookahead=barmerge.lookahead_on)
 [dL, h4TrendRaw] = request.security(syminfo.tickerid, "240",
@@ -824,10 +829,10 @@ if barstate.isconfirmed and bar_index >= swingWindow * 2
     float leftLowMin      = na
     float rightLowMin     = na
     for j = 1 to swingWindow
-        leftHighMax  := na(leftHighMax)  ? high[candidateOffset + j] : math.max(leftHighMax,  high[candidateOffset + j])
-        rightHighMax := na(rightHighMax) ? high[candidateOffset - j] : math.max(rightHighMax, high[candidateOffset - j])
-        leftLowMin   := na(leftLowMin)   ? low[candidateOffset + j]  : math.min(leftLowMin,   low[candidateOffset + j])
-        rightLowMin  := na(rightLowMin)  ? low[candidateOffset - j]  : math.min(rightLowMin,  low[candidateOffset - j])
+        leftHighMax  := na(leftHighMax)  ? high[candidateOffset - j] : math.max(leftHighMax,  high[candidateOffset - j])
+        rightHighMax := na(rightHighMax) ? high[candidateOffset + j] : math.max(rightHighMax, high[candidateOffset + j])
+        leftLowMin   := na(leftLowMin)   ? low[candidateOffset - j]  : math.min(leftLowMin,   low[candidateOffset - j])
+        rightLowMin  := na(rightLowMin)  ? low[candidateOffset + j]  : math.min(rightLowMin,  low[candidateOffset + j])
     bool isSwingHigh = candidateHigh > leftHighMax and candidateHigh >= rightHighMax
     bool isSwingLow  = candidateLow  < leftLowMin  and candidateLow  <= rightLowMin
 
@@ -957,35 +962,39 @@ if barstate.isconfirmed and not na(atr) and atr > 0
                 continue
             if zone.linkedBosId < 0
                 continue
-            if htfDailyEnabled and (htfDTrend == 0 or htfDTrend != dirSign)
-                continue
-            if htfH4Enabled and (htfH4Trend == 0 or htfH4Trend != dirSign)
-                continue
-            if dirSign != structureTrend
-                continue
-            if zone.touched
-                continue
-            if lastBullChoChId > zone.linkedBosId
-                continue
-            if not sessionAllowed
-                continue
+            if not debugBypassAllGates
+                if htfDailyEnabled and (htfDTrend == 0 or htfDTrend != dirSign)
+                    continue
+                if htfH4Enabled and (htfH4Trend == 0 or htfH4Trend != dirSign)
+                    continue
+                if dirSign != structureTrend
+                    continue
+                if zone.touched
+                    continue
+                if lastBullChoChId > zone.linkedBosId
+                    continue
+                if not sessionAllowed
+                    continue
+                float proximity  = math.abs(close - obTop)
+                if proximity > rulebookEntryProximityAtr * atr
+                    continue
+                float slDist  = math.abs(obTop - (obBottom - atr * rulebookSlEdgeAtr))
+                if slDist > rulebookSlMaxAtr * atr
+                    continue
+                if slDist < rulebookSlMinAtr * atr
+                    continue    
+                float targetPrice = obTop + rulebookMinRR * slDist
+                bool wallHit = false
+                if not na(htfH4RangeHigh) and targetPrice >= htfH4RangeHigh
+                    wallHit := true
+                if wallHit
+                    continue
             float obTop      = zone.top
             float obBottom   = zone.bottom
-            float entryPrice = obTop
+            float entryPrice = debugBypassAllGates ? (zone.direction == 1 ? obTop : obBottom) : (zone.direction == 1 ? obTop : obBottom)
             float proximity  = math.abs(close - entryPrice)
-            if proximity > rulebookEntryProximityAtr * atr
-                continue
-            float slPrice = obBottom - atr * rulebookSlEdgeAtr
-            float slDist  = math.abs(entryPrice - slPrice)
-            if slDist > rulebookSlMaxAtr * atr
-                continue
-            float targetPrice = entryPrice + rulebookMinRR * slDist
-            bool wallHit = false
-            if not na(htfH4RangeHigh) and targetPrice >= htfH4RangeHigh
-                wallHit := true
-            if wallHit
-                continue
-            float score = 0.0
+            float slDist     = math.abs(entryPrice - (entryPrice > close ? obTop + atr * rulebookSlEdgeAtr : obBottom - atr * rulebookSlEdgeAtr))
+            float score      = 0.0
             if expansionQualified
                 score += 1.0
             if dirSign == structureTrend
@@ -997,7 +1006,7 @@ if barstate.isconfirmed and not na(atr) and atr > 0
                 score += 1.0
             if pdZone == "discount"
                 score += 1.0
-            if score < rulebookScoreThreshold
+            if not debugBypassAllGates and score < rulebookScoreThreshold
                 continue
             int activationPos = zone.activationIndex
             if activationPos > bestObActivation or (activationPos == bestObActivation and proximity < bestProximity) or (activationPos == bestObActivation and proximity == bestProximity and zone.id < bestObId)
@@ -1021,35 +1030,39 @@ if barstate.isconfirmed and not na(atr) and atr > 0
                 continue
             if zone.linkedBosId < 0
                 continue
-            if htfDailyEnabled and (htfDTrend == 0 or htfDTrend != dirSign)
-                continue
-            if htfH4Enabled and (htfH4Trend == 0 or htfH4Trend != dirSign)
-                continue
-            if dirSign != structureTrend
-                continue
-            if zone.touched
-                continue
-            if lastBearChoChId > zone.linkedBosId
-                continue
-            if not sessionAllowed
-                continue
+            if not debugBypassAllGates
+                if htfDailyEnabled and (htfDTrend == 0 or htfDTrend != dirSign)
+                    continue
+                if htfH4Enabled and (htfH4Trend == 0 or htfH4Trend != dirSign)
+                    continue
+                if dirSign != structureTrend
+                    continue
+                if zone.touched
+                    continue
+                if lastBearChoChId > zone.linkedBosId
+                    continue
+                if not sessionAllowed
+                    continue
+                float proximity  = math.abs(close - obBottom)
+                if proximity > rulebookEntryProximityAtr * atr
+                    continue
+                float slDist  = math.abs(obBottom - (obTop + atr * rulebookSlEdgeAtr))
+                if slDist > rulebookSlMaxAtr * atr
+                    continue
+                if slDist < rulebookSlMinAtr * atr
+                    continue    
+                float targetPrice = obBottom - rulebookMinRR * slDist
+                bool wallHit = false
+                if not na(htfH4RangeLow) and targetPrice <= htfH4RangeLow
+                    wallHit := true
+                if wallHit
+                    continue
             float obTop      = zone.top
             float obBottom   = zone.bottom
             float entryPrice = obBottom
             float proximity  = math.abs(close - entryPrice)
-            if proximity > rulebookEntryProximityAtr * atr
-                continue
-            float slPrice = obTop + atr * rulebookSlEdgeAtr
-            float slDist  = math.abs(entryPrice - slPrice)
-            if slDist > rulebookSlMaxAtr * atr
-                continue
-            float targetPrice = entryPrice - rulebookMinRR * slDist
-            bool wallHit = false
-            if not na(htfH4RangeLow) and targetPrice <= htfH4RangeLow
-                wallHit := true
-            if wallHit
-                continue
-            float score = 0.0
+            float slDist     = math.abs(entryPrice - (obTop + atr * rulebookSlEdgeAtr))
+            float score      = 0.0
             if expansionQualified
                 score += 1.0
             if dirSign == structureTrend
@@ -1061,19 +1074,47 @@ if barstate.isconfirmed and not na(atr) and atr > 0
                 score += 1.0
             if pdZone == "premium"
                 score += 1.0
-            if score < rulebookScoreThreshold
+            if not debugBypassAllGates and score < rulebookScoreThreshold
+                continue
+            int activationPos = zone.activationIndex
+            if activationPos > bestObActivation or (activationPos == bestObActivation and proximity < bestProximity) or (activationPos == bestObActivation and proximity == bestProximity and zone.id < bestObId)
+                bestObId         := zone.id
+                bestObDir        := dirSign
+                bestObTop        := obTop
+                bestObBottom     := obBottom
+                bestObActivation := activationPos
+                bestScore        := score
+                bestEdgeDist     := proximity
+                bestBosId        := zone.linkedBosId
+                bestProximity    := proximity
+                bestReason       := "ok"
+
     if bestObId >= 0
         float entry      = bestObDir == 1 ? bestObTop : bestObBottom
         float slEdge     = bestObDir == 1 ? bestObBottom - atr * rulebookSlEdgeAtr : bestObTop + atr * rulebookSlEdgeAtr
         float slDistance = math.abs(entry - slEdge)
         float target     = bestObDir == 1 ? entry + rulebookMinRR * slDistance : entry - rulebookMinRR * slDistance
-        // Scale-in 2R/4R levels (Design A default). Only computed when toggle on.
-        // Both legs of scale-in math are validated against src/scale_in_exit.py.
-        // Mirrors Python ScaleInExit: scale_in_r=2.0, final_tp_r=4.0, leg2_lot=0.5.
-        float scaleInTrigger = useScaleInMode ? (bestObDir == 1 ? entry + 2.0 * slDistance : entry - 2.0 * slDistance) : na
-        float finalTp        = useScaleInMode ? (bestObDir == 1 ? entry + 4.0 * slDistance : entry - 4.0 * slDistance) : na
+        
+        
+        // Scale-in 2R/4R levels (Design A: 2R trigger + 4R final TP).
+        // Mirrors src/scale_in_exit.py: scale_in_r=2.0, final_tp_r=4.0.
+        // scaleInLeg2Tp1R <= 2.0 disables Design B intermediate TP (only 2R+4R drawn).
+        if useScaleInMode
+            scaleInTrigger := bestObDir == 1 ? entry + 2.0 * slDistance : entry - 2.0 * slDistance
+            finalTp        := bestObDir == 1 ? entry + 4.0 * slDistance : entry - 4.0 * slDistance
         // Optional Design B leg2 TP1 at scaleInLeg2Tp1R (e.g. 3.0 = 3R).
-        float leg2Tp1        = useScaleInMode and scaleInLeg2Tp1R > 2.0 ? (bestObDir == 1 ? entry + scaleInLeg2Tp1R * slDistance : entry - scaleInLeg2Tp1R * slDistance) : na
+        float leg2Tp1 = useScaleInMode and scaleInLeg2Tp1R > 2.0 ? (bestObDir == 1 ? entry + scaleInLeg2Tp1R * slDistance : entry - scaleInLeg2Tp1R * slDistance) : na
+    
+        // Trade label - shows entry, SL, 2R, 4R levels on chart
+        // Only fires on NEW chart-qualified setup (bestObId changed)
+        if manualGatesAllOk and bestObId != bestObId[1]
+            string sideText = bestObDir == 1 ? "LONG" : "SHORT"
+            color  sideColor = bestObDir == 1 ? color.new(color.lime, 30) : color.new(color.red, 30)
+            string labelText = sideText + " @ " + str.tostring(entry, format.mintick) + "\nSL " + str.tostring(slEdge, format.mintick) + "\n+2R " + str.tostring(scaleInTrigger, format.mintick) + "\n+4R " + str.tostring(finalTp, format.mintick)
+            float labelY = bestObDir == 1 ? high : low
+            string labelStyle = bestObDir == 1 ? label.style_label_down : label.style_label_up
+            label.new(bar_index, labelY, labelText, xloc=xloc.bar_index, style=labelStyle, textcolor=color.white, color=sideColor, size=size.small)    
+
         if manualGatesAllOk
             rulebookState := "chart-qualified"
             log.info("SMC chart_qualified @ " + str.tostring(bar_index) + " ob_id=" + str.tostring(bestObId) + " dir=" + str.tostring(bestObDir) + " score=" + str.tostring(bestScore))
@@ -1109,6 +1150,7 @@ if barstate.isconfirmed and not na(atr) and atr > 0
         rulebookFinalTp        := float(na)
         rulebookLeg2Tp1        := float(na)
         rulebookScore        := 0.0
+        rulebookRejection    := "no-qualifying-ob"
 
         if manualGatesAllOk
             rulebookState := "no-signal"
@@ -1126,23 +1168,24 @@ plot(showSwingsEffective ? displaySwingHigh : na, "Last swing high", color=color
 plot(showSwingsEffective ? displaySwingLow  : na, "Last swing low",  color=color.new(color.aqua, 70), linewidth=1, style=plot.style_linebr)
 plotshape(showStructureEffective and bosSignal == 1,  "Bull BOS",  shape.triangleup,   location.abovebar, color=color.lime, size=size.tiny, text="BOS")
 plotshape(showStructureEffective and bosSignal == -1, "Bear BOS",  shape.triangledown, location.belowbar, color=color.red,  size=size.tiny, text="BOS")
+plotshape(showStructureEffective and chochSignal == 1,  "Bull CHoCH", shape.circle, location.abovebar, color=color.new(color.lime, 0), size=size.tiny, text="C")
+plotshape(showStructureEffective and chochSignal == -1, "Bear CHoCH", shape.circle, location.belowbar, color=color.new(color.red, 0), size=size.tiny, text="C")
 plotchar(showDisplacement and expansionQualified ? high : na, "Qualified displacement", "D", location.abovebar, color=color.new(color.yellow, 0), size=size.tiny)
 
-// Scale-in exit levels (Design A: 2R trigger + 4R final TP; Design B: + 3R TP1).
-// All three lines stay na when useScaleInMode is off, so plot() emits nothing.
-// Lines use linebr style so they extend to the right edge until the next
-// qualifying OB replaces them. Do NOT use plot.style_circles — it would draw
-// markers on every bar where the level exists.
-plot(useScaleInMode and showScaleInLines ? rulebookScaleInTrigger : na, "Scale-in trigger (2R)", color=color.new(color.teal, 0), linewidth=2, style=plot.style_linebr)
-plot(useScaleInMode and showScaleInLines ? rulebookFinalTp        : na, "Scale-in final TP (4R)", color=color.new(color.fuchsia, 0), linewidth=2, style=plot.style_linebr)
-plot(useScaleInMode and showScaleInLines and not na(rulebookLeg2Tp1) ? rulebookLeg2Tp1 : na, "Scale-in leg2 TP1 (Design B)", color=color.new(color.orange, 60), linewidth=1, style=plot.style_linebr)
-
-plotchar(showDisplacement and expansionQualified ? high : na, "Qualified displacement", "D", location.abovebar, color=color.new(color.yellow, 0), size=size.tiny)
+// Scale-in TP lines: only drawn when useScaleInMode is on AND an OB is currently active.
+// Linebr style: line extends forward from current bar until next setup replaces it.
+// When OB dies/invalidates, scaleInTrigger/finalTp become na and the line disappears.
+//plot(useScaleInMode and showScaleInLines ? scaleInTrigger : na, "Scale-in 2R trigger", color=color.new(color.teal, 0), linewidth=2, style=plot.style_linebr)
+//plot(useScaleInMode and showScaleInLines ? finalTp : na, "Scale-in 4R final TP", color=color.new(color.fuchsia, 0), linewidth=2, style=plot.style_linebr)
+//plot(useScaleInMode and showScaleInLines ? scaleInTrigger : na, "Scale-in 2R trigger", color=color.new(color.teal, 0), linewidth=2, style=plot.style_stepline_diamond)
+//plot(useScaleInMode and showScaleInLines ? finalTp : na, "Scale-in 4R final TP", color=color.new(color.fuchsia, 0), linewidth=2, style=plot.style_stepline_diamond)
+plot(useScaleInMode and showScaleInLines ? scaleInTrigger : na, "Scale-in 2R trigger", color=color.new(color.teal, 0), linewidth=2, style=plot.style_circles)
+plot(useScaleInMode and showScaleInLines ? finalTp : na, "Scale-in 4R final TP", color=color.new(color.fuchsia, 0), linewidth=2, style=plot.style_circles)
 
 //==============================================================================
 // Context table
 //==============================================================================
-var table ctx = table.new(position.top_right, 2, 14, bgcolor=color.new(color.black, 78))
+var table ctx = table.new(position.top_right, 2, 11, bgcolor=color.new(color.black, 78))
 if showContext and barstate.islast
     table.cell(ctx, 0, 0, "Profile",  text_color=color.white)
     table.cell(ctx, 1, 0, profile,     text_color=color.white)
@@ -1167,41 +1210,9 @@ if showContext and barstate.islast
     table.cell(ctx, 0, 10, "Diag",   text_color=color.white)
     table.cell(ctx, 1, 10, lastDiagnostic, text_color=color.silver)
 
-    // Scale-in rows (only meaningful when useScaleInMode is on; show "—" otherwise)
-    table.cell(ctx, 0, 11, "SI 2R", text_color=color.white)
-    table.cell(ctx, 1, 11, useScaleInMode ? str.tostring(rulebookScaleInTrigger, format.mintick) : "—", text_color=color.teal)
-    table.cell(ctx, 0, 12, "Leg2 TP1", text_color=color.white)
-    table.cell(ctx, 1, 12, useScaleInMode and not na(rulebookLeg2Tp1) ? str.tostring(rulebookLeg2Tp1, format.mintick) : "—", text_color=color.orange)
-    table.cell(ctx, 0, 13, "SI 4R", text_color=color.white)
-    table.cell(ctx, 1, 13, useScaleInMode ? str.tostring(rulebookFinalTp, format.mintick) : "—", text_color=color.fuchsia)
-
-
 //==============================================================================
 // Alert conditions
-f_make_alert_payload(string event, string sym, string tf, string dirStr, float lvl, int btime, int obId, int bosId, string st, string rsn) =>
-    "SMC|v1|event=" + event + "|symbol=" + sym + "|tf=" + tf + "|dir=" + dirStr + "|level=" + str.tostring(lvl, format.mintick) + "|bar_time=" + str.tostring(btime) + "|ob_id=" + str.tostring(obId) + "|bos_id=" + str.tostring(bosId) + "|state=" + st + "|reason=" + rsn
-
-// Dynamic alerts: only emitted when toggle is enabled (P0 webhook payload)
-if useDynamicAlertPayload
-    // BOS / CHoCH state transitions
-    if bosSignal == 1 or bosSignal == -1
-        alert(f_make_alert_payload("bos", syminfo.ticker, timeframe.period, bosSignal == 1 ? "long" : "short", nz(brokenLevel, close), time, -1, -1, rulebookState, "structure_break"), alert.freq_once_per_bar_close)
-    if chochSignal == 1 or chochSignal == -1
-        alert(f_make_alert_payload("choch", syminfo.ticker, timeframe.period, chochSignal == 1 ? "long" : "short", nz(brokenLevel, close), time, -1, -1, rulebookState, "character_shift"), alert.freq_once_per_bar_close)
-    if (bosSignal == 1 or bosSignal == -1) and not na(brokenLevel)
-        alert(f_make_alert_payload("ob_activated", syminfo.ticker, timeframe.period, bosSignal == 1 ? "long" : "short", brokenLevel, time, rulebookObId, -1, rulebookState, "ob_touch"), alert.freq_once_per_bar_close)
-    if (lastSweepText != "none") and (lastSweepText != (lastSweepText[1] == "" ? "none" : lastSweepText[1]))
-        alert(f_make_alert_payload("sweep", syminfo.ticker, timeframe.period, lastCleanSweepDir == 1 ? "long" : lastCleanSweepDir == -1 ? "short" : "none", nz(lastCleanSweepLevel, close), time, -1, -1, rulebookState, "liquidity_sweep"), alert.freq_once_per_bar_close)
-    if (lastPoolText != "none") and (lastPoolText != (lastPoolText[1] == "" ? "none" : lastPoolText[1]))
-        alert(f_make_alert_payload("pool", syminfo.ticker, timeframe.period, "none", close, time, -1, -1, rulebookState, "pool_event"), alert.freq_once_per_bar_close)
-    if rulebookState == "chart-qualified" and rulebookState[1] != "chart-qualified"
-        alert(f_make_alert_payload("chart_qualified", syminfo.ticker, timeframe.period, rulebookObDir == 1 ? "long" : rulebookObDir == -1 ? "short" : "none", nz(rulebookEntry, close), time, rulebookObId, -1, rulebookState, "candidate_ready"), alert.freq_once_per_bar_close)
-    if rulebookState == "watch" and rulebookState[1] != "watch"
-        alert(f_make_alert_payload("watch", syminfo.ticker, timeframe.period, rulebookObDir == 1 ? "long" : rulebookObDir == -1 ? "short" : "none", nz(rulebookEntry, close), time, rulebookObId, -1, rulebookState, rulebookRejection), alert.freq_once_per_bar_close)
-    if rulebookState == "blocked" and rulebookState[1] != "blocked"
-        alert(f_make_alert_payload("blocked", syminfo.ticker, timeframe.period, rulebookObDir == 1 ? "long" : rulebookObDir == -1 ? "short" : "none", nz(rulebookEntry, close), time, rulebookObId, -1, rulebookState, rulebookRejection), alert.freq_once_per_bar_close)
-
-// Fallback alertcondition() (always on) for human-readable TradingView alerts
+//==============================================================================
 alertcondition(bosSignal == 1 or bosSignal == -1, "SMC BOS", "SMC BOS fired")
 alertcondition(chochSignal == 1 or chochSignal == -1, "SMC CHoCH", "SMC CHoCH fired")
 alertcondition((bosSignal == 1 or bosSignal == -1) and not na(brokenLevel), "SMC OB activated", "SMC order block activated")

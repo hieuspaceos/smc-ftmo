@@ -240,6 +240,17 @@ def check_entry(snapshot: Dict) -> Optional[Dict]:
         return None
 
     risk_per_unit = abs(entry - sl)
+
+    # Phase 08 update 2026-09-02: filter OB candidates by SL distance in ATR units.
+    # Mirrors Pine `rulebookSlMinAtr` and `rulebookSlMaxAtr` inputs.
+    # Skip OBs with SL too tight (< min) — spread/commission erodes the budget.
+    # Skip OBs with SL too wide (> max) — risk per trade > max acceptable.
+    min_sl_atr = float(snapshot.get("min_sl_atr", 0.0))
+    max_sl_atr = float(snapshot.get("max_sl_atr", 99.0))
+    if min_sl_atr > 0 and risk_per_unit < min_sl_atr * atr:
+        return None
+    if max_sl_atr < 99.0 and risk_per_unit > max_sl_atr * atr:
+        return None
     # TP ladder from snapshot (falls back to legacy 2R/3R/4R if absent).
     # snapshot["tp_stages"] is a sequence of (r_multiple, close_pct_of_remaining).
     # We surface only the first 3 R-multiples as tp1/tp2/tp3 — these are

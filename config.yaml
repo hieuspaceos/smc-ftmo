@@ -37,6 +37,14 @@ strategy:
   min_confluence_score: 4       # tối thiểu 4/5
   require_displacement: true    # BẮT BUỘC
   require_bias_aligned: true    # BẮT BUỘC
+  sl_atr_buffer: 0.2            # SL thêm 0.2× ATR buffer dưới OB
+  # Phase 08 update 2026-09-02: SL distance filter.
+  # Pine slDist = OB_size + 0.2*ATR (OB size EURUSD M15 ~ 0.5-1.8 ATR).
+  # min_sl_atr=0.3 = allow OB nhỏ, chỉ skip extremes (< 3 pips).
+  # max_sl_atr=4.0 = match Pine `rulebookSlMaxAtr`.
+  # Python backtest confirms filter is no-op at these levels.
+  min_sl_atr: 0.3
+  max_sl_atr: 4.0
 
   # Partial TP: 40% tại 2R, 30% tại 3R, 30% tại 4R
   partial_tp:
@@ -44,10 +52,12 @@ strategy:
     - {pct: 0.30, r: 3.0, move_sl_to: entry}   # BE giữ
     - {pct: 0.30, r: 4.0, move_sl_to: entry}
 
-  # Exit mode: 'ladder' (PartialTPExit default) | 'scale_in' (ScaleInExit 2R/4R)
-  # Backtest validated: scale_in +23% PnL, -44% DD vs ladder trên EURUSD 2016-2026.
-  # Manual trade 8 tuần vẫn dùng ladder. Bot/backtest opt-in.
-  exit_mode: ladder
+  # Exit mode: 'ladder' (PartialTPExit default) | 'scale_in' (ScaleInExit 2R/4R).
+  # Phase 08 decision 2026-09-02: switched to scale_in as primary.
+  # 10y backtest (2016-2026): PF 3.56, MaxDD -3.40%, 604 trades, +456% ROI.
+  # Manual trade + bot both use scale_in (Design A: 50% @ 2R, 50% leg2 @ 4R).
+  # Ladder exit code retained in src/strategy.py for reference but not used.
+  exit_mode: scale_in
   # Optional Design B: leg2 takes 50% profit at this R from original entry.
   # null/omitted = Design A (leg2 runs full to 4R). Set to 3.0 for Design B.
   # Design B: winrate +5.7pp, DD -0.5pp, nhưng PnL -3.2% vs Design A.
