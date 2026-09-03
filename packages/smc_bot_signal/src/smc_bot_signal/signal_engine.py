@@ -133,19 +133,32 @@ class SignalEngine:
         bias_h4 = _detect_tf_bias(
             _ohlc_resample(df, "4h"), swing_length=self.cfg.htf_swing_length
         )
-        if bias_d == "bull" and bias_h4 == "bull":
-            bias_side: str | None = "long"
-        elif bias_d == "bear" and bias_h4 == "bear":
-            bias_side = "short"
-        else:
-            bias_side = None
-            if self.cfg.require_bias_aligned:
-                logger.info(
-                    "stand_aside bias D=%s H4=%s symbol=%s — no emit",
-                    bias_d,
-                    bias_h4,
-                    symbol,
-                )
+        mode = (self.cfg.bias_mode or "strict").lower()
+        bias_side: str | None = None
+        if mode == "h4_only":
+            # Trade with H4; block only if Daily is hard counter-trend.
+            if bias_h4 == "bull" and bias_d != "bear":
+                bias_side = "long"
+            elif bias_h4 == "bear" and bias_d != "bull":
+                bias_side = "short"
+        elif mode == "any":
+            if bias_h4 == "bull" or bias_d == "bull":
+                bias_side = "long"
+            elif bias_h4 == "bear" or bias_d == "bear":
+                bias_side = "short"
+        else:  # strict D+H4
+            if bias_d == "bull" and bias_h4 == "bull":
+                bias_side = "long"
+            elif bias_d == "bear" and bias_h4 == "bear":
+                bias_side = "short"
+        if bias_side is None and self.cfg.require_bias_aligned:
+            logger.info(
+                "stand_aside bias_mode=%s D=%s H4=%s symbol=%s — no emit",
+                mode,
+                bias_d,
+                bias_h4,
+                symbol,
+            )
 
         out: list[AlertPayload] = []
         for ob in obs.events:
@@ -254,7 +267,7 @@ class SignalEngine:
         sl_atr = risk / atr_v
         if sl_atr < self.cfg.min_sl_atr or sl_atr > self.cfg.max_sl_atr:
             return None
-        # Absolute pip floor (EURUSD live: >= 17 pips)
+        # Absolute pip floor (EURUSD live: >= 12 pips)
         pip_size = 0.01 if symbol.upper().startswith("XAU") else 0.0001
         if symbol.upper().startswith("BTC"):
             pip_size = 1.0

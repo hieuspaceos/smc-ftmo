@@ -32,33 +32,24 @@ risk:
 strategy:
   swing_length: 10
   rr_target: 2.5
-  displacement_atr_mult: 1.5    # candle range > 1.5× ATR
-  sweep_atr_buffer: 0.05        # vượt swing ≥ 0.05× ATR
-  min_confluence_score: 4       # tối thiểu 4/5
-  require_displacement: true    # BẮT BUỘC
-  require_bias_aligned: true    # BẮT BUỘC
-  sl_atr_buffer: 0.2            # SL thêm 0.2× ATR buffer dưới OB
-  # Pine parity: HTF enable flags. Default OFF to match user's Pine
-  # chart config (both 'Use Daily HTF' and 'Use H4 HTF' unchecked).
-  # Set both to true to match Pine defaults (stricter mode, fewer
-  # but higher-quality trades).
+  # Loosened 2026-09-03 for more setups while keeping min_sl_pips=17
+  displacement_atr_mult: 1.2    # was 1.5 — easier displacement qualify
+  sweep_atr_buffer: 0.05
+  min_confluence_score: 3       # was 4 — disp+bias+first_test enough
+  require_displacement: true
+  require_bias_aligned: true
+  sl_atr_buffer: 0.2
+  # bias_mode: h4_only = more trades than strict D+H4
+  bias_mode: h4_only
   htf_daily_enabled: false
   htf_h4_enabled: false
-  # Phase 08 update 2026-09-02: SL distance filter.
-  # Pine slDist = OB_size + 0.2*ATR (OB size EURUSD M15 ~ 0.5-1.8 ATR).
-  # min_sl_atr=0.3 = allow OB nhỏ, chỉ skip extremes (< 3 pips).
-  # max_sl_atr=4.0 = match Pine `rulebookSlMaxAtr`.
-  # Python backtest confirms filter is no-op at these levels.
   min_sl_atr: 0.3
-  max_sl_atr: 4.0
-  # Absolute pip floor (live vs spread). EURUSD M15: >=17 pip required.
-  # XAUUSD: 100 pips = $1.00 price (pip_size=0.01). 0 = disabled.
+  max_sl_atr: 5.0               # was 4.0 — allow slightly fatter OB
+  # KEEP 17 — manual lag + spread (user decision)
   min_sl_pips:
     EURUSD: 17
     XAUUSD: 100
-  # Pine parity: rulebookEntryProximityAtr (default 1.5).
-  # Reject trade if entry > this many ATRs from current close.
-  rulebook_entry_proximity_atr: 1.5
+  rulebook_entry_proximity_atr: 2.0  # was 1.5 — entry farther from OB OK
   # Partial TP: 40% tại 2R, 30% tại 3R, 30% tại 4R
   partial_tp:
     - {pct: 0.40, r: 2.0, move_sl_to: entry}   # BE sau khi hit 2R
@@ -76,7 +67,6 @@ strategy:
   # Design B: winrate +5.7pp, DD -0.5pp, nhưng PnL -3.2% vs Design A.
   leg2_tp1_r: null
 
-  sl_atr_buffer: 0.2            # SL thêm 0.2× ATR buffer dưới OB
 
 # Confluence scoring
 confluence:
@@ -115,7 +105,7 @@ active_sessions:
 
 # Pip value (USD per 1.0 lot per 1 pip)
 pip_values:
-  EURUSD: 17.0
+  EURUSD: 12.0
   XAUUSD: 1.0     # XAU: 1 pip = $0.01, 1 lot = 100 oz
   BTCUSD: 1.0     # BTC: đơn vị USD, 1 lot = 1 BTC
 

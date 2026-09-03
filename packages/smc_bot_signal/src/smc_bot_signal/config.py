@@ -60,16 +60,17 @@ class SignalBotConfig:
     htf_swing_length: int = 10
 
     # Rule-book / config.yaml aligned
-    displacement_atr_mult: float = 1.5
-    min_confluence_score: int = 4
+    displacement_atr_mult: float = 1.2
+    min_confluence_score: int = 3
     require_displacement: bool = True
     require_bias_aligned: bool = True
+    bias_mode: str = "h4_only"  # strict | h4_only | any
     sl_atr_buffer: float = 0.2
     min_sl_atr: float = 0.3
-    max_sl_atr: float = 4.0
-    # EURUSD live floor 17 pips (spread-safe).
+    max_sl_atr: float = 5.0
+    # EURUSD live floor 17 pips (manual lag + spread) — do not lower lightly
     min_sl_pips: float = 17.0
-    entry_proximity_atr: float = 1.5
+    entry_proximity_atr: float = 2.0
     tp1_r: float = 2.0
     tp2_r: float = 3.0
     tp3_r: float = 4.0
@@ -111,15 +112,16 @@ class SignalBotConfig:
             swing_left=_env_int("SMC_SIGNAL_SWING_LEFT", 5),
             swing_right=_env_int("SMC_SIGNAL_SWING_RIGHT", 5),
             htf_swing_length=_env_int("SMC_SIGNAL_HTF_SWING_LENGTH", 10),
-            displacement_atr_mult=_env_float("SMC_SIGNAL_DISP_ATR_MULT", 1.5),
-            min_confluence_score=_env_int("SMC_SIGNAL_MIN_SCORE", 4),
+            displacement_atr_mult=_env_float("SMC_SIGNAL_DISP_ATR_MULT", 1.2),
+            min_confluence_score=_env_int("SMC_SIGNAL_MIN_SCORE", 3),
             require_displacement=_env_bool("SMC_SIGNAL_REQUIRE_DISP", True),
             require_bias_aligned=_env_bool("SMC_SIGNAL_REQUIRE_BIAS", True),
+            bias_mode=_env("SMC_SIGNAL_BIAS_MODE", "h4_only").lower(),
             sl_atr_buffer=_env_float("SMC_SIGNAL_SL_ATR_BUFFER", 0.2),
             min_sl_atr=_env_float("SMC_SIGNAL_MIN_SL_ATR", 0.3),
-            max_sl_atr=_env_float("SMC_SIGNAL_MAX_SL_ATR", 4.0),
+            max_sl_atr=_env_float("SMC_SIGNAL_MAX_SL_ATR", 5.0),
             min_sl_pips=_env_float("SMC_SIGNAL_MIN_SL_PIPS", 17.0),
-            entry_proximity_atr=_env_float("SMC_SIGNAL_ENTRY_PROX_ATR", 1.5),
+            entry_proximity_atr=_env_float("SMC_SIGNAL_ENTRY_PROX_ATR", 2.0),
             tp1_r=_env_float("SMC_SIGNAL_TP1_R", 2.0),
             tp2_r=_env_float("SMC_SIGNAL_TP2_R", 3.0),
             tp3_r=_env_float("SMC_SIGNAL_TP3_R", 4.0),

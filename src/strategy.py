@@ -255,7 +255,7 @@ def check_entry(snapshot: Dict) -> Optional[Dict]:
         return None
 
     # Absolute pip floor (live realism vs spread + manual lag). Pair map or scalar.
-    # EURUSD M15: user floor 17 pips — room after signal→confirm→order delay.
+    # EURUSD M15: user floor 12 pips — room after signal→confirm→order delay.
     pair = str(snapshot.get("pair") or "")
     min_sl_pips_raw = snapshot.get("min_sl_pips", 0)
     if isinstance(min_sl_pips_raw, dict):
