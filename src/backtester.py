@@ -187,6 +187,13 @@ def run_backtest(
     require_bias_aligned = bool(
         strat_cfg.get("require_bias_aligned", config.get("require_bias_aligned", True))
     )
+    # Pine parity: HTF enable flags. Default True (Pine default). User can
+    # disable to match Pine when 'Use Daily HTF' / 'Use H4 HTF' are unchecked.
+    htf_daily_enabled = bool(
+        strat_cfg.get("htf_daily_enabled", config.get("htf_daily_enabled", True))
+    )
+    htf_h4_enabled = bool(
+        strat_cfg.get("htf_h4_enabled", config.get("htf_h4_enabled", True)))
     # Plan 14 regime-aware strategy:
     #   regime_mode="off"  -> breaker overlay disabled (legacy baseline).
     #   regime_mode="on"   -> breaker overlay always enabled.
@@ -450,7 +457,12 @@ def run_backtest(
         bias_d = m15_bias_d.iloc[i] if i < len(m15_bias_d) else "neutral"
         bias_h4 = m15_bias_h4.iloc[i] if i < len(m15_bias_h4) else "neutral"
         bias_by_tf = {"D": bias_d, "H4": bias_h4}
-        aligned_bias = align_bias(bias_by_tf)
+        # Pine parity: respect htf_daily_enabled / htf_h4_enabled flags.
+        # When both HTFs are disabled, fall back to 'any' mode logic below.
+        if not htf_daily_enabled and not htf_h4_enabled:
+            aligned_bias = "any_long_short"  # both HTFs off: take any direction
+        else:
+            aligned_bias = align_bias(bias_by_tf)
 
         displacement = bool(disp_series.iloc[i]) if i < len(disp_series) else False
         sweep_bull = bool(sweep_bull_series.iloc[i]) if i < len(sweep_bull_series) else False
@@ -473,6 +485,14 @@ def run_backtest(
             trade_dir = "long"
         elif aligned_bias == "aligned_short":
             trade_dir = "short"
+        elif aligned_bias == "any_long_short":
+            # Pine parity: both HTF flags disabled. Fire on any bias (D or H4).
+            if bias_d == "bull" or bias_h4 == "bull":
+                trade_dir = "long"
+            elif bias_d == "bear" or bias_h4 == "bear":
+                trade_dir = "short"
+            else:
+                trade_dir = None
         elif bias_mode == "h4_only":
             # Trade on H4 alone, but only when D is not counter-trend.
             if bias_d == "bear" and bias_h4 == "bull":

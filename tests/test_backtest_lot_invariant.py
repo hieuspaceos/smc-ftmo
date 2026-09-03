@@ -311,5 +311,53 @@ def test_entry_proximity_config_aware():
     assert check_entry(snap_far_wide) is not None, "wide threshold should accept"
 
 
+
+
+def test_htf_enable_flags_respected():
+    """htf_daily_enabled and htf_h4_enabled flags control HTF bias check.
+
+    When both flags are False, any_single_TF bias is enough for entry
+    (Pine parity: matches 'Use Daily HTF' + 'Use H4 HTF' unchecked).
+    """
+    from src.backtester import run_backtest
+
+    base = {
+        "ftmo": {"account_size": 100000, "phase": "challenge",
+                  "profit_target": 0.10, "max_daily_loss": 0.05,
+                  "daily_loss_limit_r": 2.0, "max_open_positions": 1},
+        "strategy": {
+            "swing_length": 10, "rr_target": 4.0,
+            "displacement_atr_mult": 1.5, "sweep_atr_buffer": 0.05,
+            "min_confluence_score": 4, "require_displacement": True,
+            "require_bias_aligned": True, "sl_atr_buffer": 0.2,
+            "min_sl_atr": 0.3, "max_sl_atr": 4.0,
+            "rulebook_entry_proximity_atr": 1.5,
+            "bias_mode": "strict", "regime_mode": "off",
+            "promotion_lookback_bars": 50,
+            "exit_mode": "scale_in", "leg2_tp1_r": None,
+        },
+        "confluence": {"weights": {"displacement": 1, "bias_aligned": 1,
+                                    "sweep_clean": 1, "premium_discount": 1,
+                                    "first_test": 1}},
+        "filters": {"sweep": False, "pd": False, "first_test": False},
+        "start_date": "2025-01-01", "end_date": "2025-06-30",
+        "pd_lookback": 50,
+        "execution": {
+            "spread_pips": {"EURUSD": 0.5},
+            "commission_per_lot_per_side": 2.50,
+            "slippage_pips": {"mean": 0.1, "std": 0.3, "seed": 42},
+        },
+    }
+    # Strict (default HTF on)
+    t1, _ = run_backtest("EURUSD", base)
+    # Both HTF off
+    cfg_off = dict(base)
+    cfg_off["strategy"] = dict(base["strategy"])
+    cfg_off["strategy"]["htf_daily_enabled"] = False
+    cfg_off["strategy"]["htf_h4_enabled"] = False
+    t2, _ = run_backtest("EURUSD", cfg_off)
+    assert len(t2) > len(t1),         f"HTF off should fire MORE trades than HTF on (strict). Got strict={len(t1)}, off={len(t2)}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
