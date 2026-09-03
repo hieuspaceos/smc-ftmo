@@ -1,0 +1,7 @@
+gate_id,gate_name,check,y_n
+1,Bias,D1+H4 cùng chiều,
+2,Loss limit,P/L hôm nay chưa quá -2R,
+3,Position limit,Vị thế mở ≤ 2,
+4,News,Không có tin trong 30 phút,
+5,SL pip,EUR ≥17 / XAU ≥400,
+6,SL zone,Trên/dưới swing hoặc liquidity pool,

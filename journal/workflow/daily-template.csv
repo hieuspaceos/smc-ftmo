@@ -1,0 +1,5 @@
+# Daily trade log. Mỗi dòng = 1 setup.
+# Gates: 1=bias 2=-2R 3=position 4=news 5=SLpip 6=SLzone. y=pass, n=fail/skip.
+# Plan A: entry/SL/TP1(2R)/TP2(4R). Plan A+: hành động khi hit 1R, hit 2R.
+# Plan B: phá SL thì làm gì, không chạm entry thì làm gì.
+date,time,couple,direction,zone1,zone1_top,zone1_bot,zone2,zone2_top,zone2_bot,zone3,zone3_top,zone3_bot,entry,sl,tp1,tp2,r1_action,r2_action,plan_b_sl,plan_b_no_touch,gate_bias,gate_loss,gate_pos,gate_news,gate_slpip,gate_slzone,exec_slpip,exec_lot,exec_entry,result,r,dollar
