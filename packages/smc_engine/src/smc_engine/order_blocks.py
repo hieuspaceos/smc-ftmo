@@ -25,6 +25,12 @@ _OHLC_COLS = ("open", "high", "low", "close")
 DEFAULT_CANDIDATE_LOOKBACK = 20
 DEFAULT_EXPIRY_BARS = 200
 DEFAULT_MAX_ACTIVE_PER_DIRECTION = 128
+# OB zone resolution mode — mirrors Pine ``obZoneMode``.
+#   "full_candle": top=high, bottom=low (legacy default; widest, lots of fill noise).
+#   "body_50":    top/bottom = body extremes (ICT/SMC standard). New default.
+#   "body_33":    body tightened to inner third (institutional).
+DEFAULT_ZONE_MODE = "body_50"
+_VALID_ZONE_MODES = ("full_candle", "body_50", "body_33")
 
 
 @dataclass(frozen=True)
@@ -192,6 +198,43 @@ def _find_origin(
     return found
 
 
+def _ob_zone_bounds(
+    direction: Direction,
+    origin: int,
+    open_: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    zone_mode: str,
+) -> tuple[float, float]:
+    """Resolve OB top/bottom from the origin candle per ``zone_mode``.
+
+    Mirrors Pine ``f_ob_zone_bounds``. Pure function, no side effects.
+    ``direction`` follows the OB sign convention (1=bullish, -1=bearish).
+    """
+    if zone_mode not in _VALID_ZONE_MODES:
+        raise ValueError(
+            f"zone_mode must be one of {_VALID_ZONE_MODES}, got {zone_mode!r}"
+        )
+    h = float(high[origin])
+    l = float(low[origin])
+    o = float(open_[origin])
+    c = float(close[origin])
+    if zone_mode == "full_candle":
+        return h, l
+    body_top = max(o, c)
+    body_bottom = min(o, c)
+    if zone_mode == "body_50":
+        return body_top, body_bottom
+    # body_33 — institutional tightening.
+    body_height = body_top - body_bottom
+    third = body_height / 3.0
+    if direction == 1:
+        # bullish OB: tighten to upper third (institutions bought from discount)
+        return body_top, body_top - third
+    return body_bottom + third, body_bottom
+
+
 def _expansion_near_break(qualified: np.ndarray, break_pos: int) -> bool:
     """Require range expansion at the break bar or the immediately previous bar."""
     if break_pos < 0 or break_pos >= len(qualified):
@@ -227,6 +270,7 @@ def detect_order_blocks(
     candidate_lookback: int = DEFAULT_CANDIDATE_LOOKBACK,
     expiry_bars: int = DEFAULT_EXPIRY_BARS,
     max_active_zones_per_direction: int = DEFAULT_MAX_ACTIVE_PER_DIRECTION,
+    zone_mode: str = DEFAULT_ZONE_MODE,
 ) -> OrderBlockResult:
     """Detect BOS-activated order blocks with chronological lifecycle.
 
@@ -246,6 +290,10 @@ def detect_order_blocks(
     max_active_zones_per_direction:
         Soft bound; when exceeded, the oldest still-active zone is expired and
         a diagnostic is recorded.
+    zone_mode:
+        OB top/bottom resolution. ``"body_50"`` (default) follows ICT/SMC
+        standard; ``"full_candle"`` is legacy; ``"body_33"`` is institutional.
+        See :data:`DEFAULT_ZONE_MODE` and :func:`_ob_zone_bounds`.
 
     Notes
     -----
@@ -260,6 +308,10 @@ def detect_order_blocks(
     max_active = _validate_positive_int(
         "max_active_zones_per_direction", max_active_zones_per_direction
     )
+    if zone_mode not in _VALID_ZONE_MODES:
+        raise ValueError(
+            f"zone_mode must be one of {_VALID_ZONE_MODES}, got {zone_mode!r}"
+        )
 
     if not isinstance(structure, StructureResult):
         raise TypeError("structure must be a StructureResult")
@@ -361,8 +413,10 @@ def detect_order_blocks(
             )
             return
 
-        top = float(high[origin])
-        bottom = float(low[origin])
+        direction: Direction = ev.direction  # type: ignore[assignment]
+        top, bottom = _ob_zone_bounds(
+            direction, origin, open_, high, low, close, zone_mode,
+        )
         if not (np.isfinite(top) and np.isfinite(bottom)):
             diagnostics.append(
                 f"skip_bad_origin_ohlc@i={i}:structure_id={ev.id}:origin={origin}"
@@ -374,8 +428,6 @@ def detect_order_blocks(
             diagnostics.append(
                 f"origin_ohlc_swapped@i={i}:structure_id={ev.id}:origin={origin}"
             )
-
-        direction: Direction = ev.direction  # type: ignore[assignment]
         _purge_dead(direction)
         q = active[direction]
         while len(q) >= max_active:
