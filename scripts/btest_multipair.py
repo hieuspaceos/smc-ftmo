@@ -49,6 +49,9 @@ DEFAULT_CFG = {
         "require_displacement": True,
         "require_bias_aligned": True,
         "sl_atr_buffer": 0.2,
+        # HTF off by default (matches user's Pine chart config).
+        "htf_daily_enabled": False,
+        "htf_h4_enabled": False,
         "bias_mode": "strict",
         "regime_mode": "off",
         "promotion_lookback_bars": 50,

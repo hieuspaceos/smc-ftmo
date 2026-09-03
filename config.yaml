@@ -38,12 +38,12 @@ strategy:
   require_displacement: true    # BẮT BUỘC
   require_bias_aligned: true    # BẮT BUỘC
   sl_atr_buffer: 0.2            # SL thêm 0.2× ATR buffer dưới OB
-  # Pine parity: HTF enable flags. Default True (Pine defaults).
-  # Set htf_daily_enabled=false and/or htf_h4_enabled=false to match
-  # Pine when 'Use Daily HTF' / 'Use H4 HTF' are unchecked.
-  htf_daily_enabled: true
-  htf_h4_enabled: true
-
+  # Pine parity: HTF enable flags. Default OFF to match user's Pine
+  # chart config (both 'Use Daily HTF' and 'Use H4 HTF' unchecked).
+  # Set both to true to match Pine defaults (stricter mode, fewer
+  # but higher-quality trades).
+  htf_daily_enabled: false
+  htf_h4_enabled: false
   # Phase 08 update 2026-09-02: SL distance filter.
   # Pine slDist = OB_size + 0.2*ATR (OB size EURUSD M15 ~ 0.5-1.8 ATR).
   # min_sl_atr=0.3 = allow OB nhỏ, chỉ skip extremes (< 3 pips).
